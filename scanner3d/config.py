@@ -8,7 +8,10 @@ import os
 CAMERA_MODE = "droidcam"
 
 # DroidCam settings (local webcam)
-DROIDCAM_INDEX = 0  # Usually 0 or 1 for DroidCam virtual camera
+# DroidCam typically appears at index 0, 1, or 2 depending on your system.
+# If index 0 is your built-in webcam, try index 1 or 2 for DroidCam.
+# Run `python main.py --list-cameras` to find the correct index.
+DROIDCAM_INDEX = 1  # Usually 0 or 1 for DroidCam virtual camera
 
 # IP Webcam settings (alternative)
 CAMERA_URL = "http://10.18.155.15:8080"
@@ -16,7 +19,7 @@ CAMERA_SOURCE = f"{CAMERA_URL}/video"  # MJPEG video stream
 SNAPSHOT_URL = f"{CAMERA_URL}/shot.jpg"  # Snapshot endpoint
 
 # Scanning settings
-NUM_ANGLES = 36  # Number of photos to extract from video (default: every 10 degrees)
+NUM_ANGLES = 50  # Number of photos to extract from video (default: every 10 degrees)
 CAPTURE_DELAY = 0.5  # Seconds between captures (legacy, not used in video mode)
 
 # Video recording settings

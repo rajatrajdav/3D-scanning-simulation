@@ -22,6 +22,7 @@ Configuration:
 import argparse
 import sys
 import os
+import time
 from pathlib import Path
 
 # Add project root to path
@@ -29,7 +30,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from scanner3d.scanner import Scanner3D, quick_scan
 from scanner3d.camera import Camera
-from scanner3d.config import OUTPUT_DIR, NUM_ANGLES, DROIDCAM_INDEX
+from scanner3d.config import OUTPUT_DIR, NUM_ANGLES, DROIDCAM_INDEX, CAMERA_MODE
 
 
 def parse_args():
@@ -86,6 +87,16 @@ Quick Start:
         "--list-cameras",
         action="store_true",
         help="Scan and list all available camera indices"
+    )
+    parser.add_argument(
+        "--capture-image",
+        action="store_true",
+        help="Open camera preview and capture a single still image (press 'c')"
+    )
+    parser.add_argument(
+        "--capture-video",
+        action="store_true",
+        help="Record a video from the DroidCam and save it as .avi file"
     )
 
     return parser.parse_args()
@@ -151,6 +162,45 @@ def run_scan(num_angles: int, duration: float, output_dir: str = None):
         scanner.cleanup()
 
 
+def run_capture_image():
+    """Open preview and capture a single still image."""
+    cam = Camera()
+    try:
+        saved = cam.capture_image()
+        if saved:
+            print(f"\n✓ Image saved to: {saved}")
+    except Exception as e:
+        print(f"Error: {e}")
+        print()
+        print("Troubleshooting:")
+        print("1. Make sure DroidCam is running on your phone and PC")
+        print("2. Check DROIDCAM_INDEX in scanner3d/config.py")
+    finally:
+        cam.release()
+
+
+def run_capture_video(duration: float = 30.0):
+    """Record a video from the DroidCam."""
+    timestamp = time.strftime("%Y%m%d_%H%M%S")
+    output_dir = Path(OUTPUT_DIR) / f"video_{timestamp}"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    video_path = str(output_dir / "recording")
+
+    cam = Camera()
+    try:
+        recorded = cam.record_video(video_path, duration_seconds=duration)
+        if recorded:
+            print(f"\n✓ Video saved to: {recorded}")
+    except Exception as e:
+        print(f"Error: {e}")
+        print()
+        print("Troubleshooting:")
+        print("1. Make sure DroidCam is running on your phone and PC")
+        print("2. Check DROIDCAM_INDEX in scanner3d/config.py")
+    finally:
+        cam.release()
+
+
 def main():
     """Main entry point."""
     args = parse_args()
@@ -166,6 +216,14 @@ def main():
         if cameras:
             print("\nTo use a specific camera, set DROIDCAM_INDEX in config.py")
             print(f"Currently configured: DROIDCAM_INDEX = {DROIDCAM_INDEX}")
+        return
+
+    if args.capture_image:
+        run_capture_image()
+        return
+
+    if args.capture_video:
+        run_capture_video(duration=args.duration)
         return
 
     # Create output directory

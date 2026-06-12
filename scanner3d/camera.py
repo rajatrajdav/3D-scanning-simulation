@@ -20,6 +20,7 @@ from .config import (
     SNAPSHOT_URL,
     RESOLUTION,
     VIDEO_RECORD_FPS,
+    OUTPUT_DIR,
 )
 
 
@@ -42,7 +43,7 @@ class Camera:
     def _open_droidcam(self) -> bool:
         """Open DroidCam virtual camera (local webcam).
         Auto-detects camera index by trying 0, 1, 2, 3, 4 in sequence
-        and using the first one that successfully opens.
+        and using the first second one that successfully opens.
         """
         indices_to_try = [DROIDCAM_INDEX] if DROIDCAM_INDEX >= 0 else []
         if DROIDCAM_INDEX >= 0:
@@ -114,6 +115,74 @@ class Camera:
             return None
         ret, frame = self.cap.read()
         return frame if ret else None
+
+    def capture_image(self, output_path: str = None) -> Optional[str]:
+        """
+        Open a live preview and capture a single still image.
+        
+        Args:
+            output_path: Path to save the image. If None, saves to captures/ directory
+                         with timestamp filename.
+            
+        Returns:
+            Path to the saved image, or None if capture failed/cancelled.
+        """
+        if not self.open():
+            print("[Camera] Failed to open camera.")
+            return None
+
+        if output_path is None:
+            timestamp = time.strftime("%Y%m%d_%H%M%S")
+            output_dir = Path(OUTPUT_DIR) / f"capture_{timestamp}"
+            output_dir.mkdir(parents=True, exist_ok=True)
+            output_path = str(output_dir / "capture.jpg")
+
+        print("=" * 60)
+        print("IMAGE CAPTURE MODE")
+        print("=" * 60)
+        print("  Press 'c' to capture an image")
+        print("  Press 'q' or ESC to quit without capturing")
+        print(f"  Save path: {output_path}")
+        print()
+
+        saved_path = None
+
+        try:
+            while self.is_streaming:
+                frame = self.read_frame()
+                if frame is None:
+                    time.sleep(0.05)
+                    continue
+
+                display = self._draw_guides(frame.copy())
+                cv2.putText(display, "Press 'c' to capture, 'q' to quit",
+                            (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
+
+                cv2.imshow("3D Scanner - Image Capture", display)
+                key = cv2.waitKey(1) & 0xFF
+
+                if key == ord('c'):
+                    # Capture the current frame
+                    os.makedirs(os.path.dirname(output_path), exist_ok=True)
+                    cv2.imwrite(output_path, frame)
+                    print(f"\n✓ Image captured and saved to: {output_path}")
+                    saved_path = output_path
+                    # Show confirmation
+                    cv2.putText(display, "IMAGE CAPTURED! Press 'q' to exit",
+                                (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 2)
+                    cv2.imshow("3D Scanner - Image Capture", display)
+                    cv2.waitKey(1500)  # Show confirmation for 1.5s
+                    break
+
+                if key == ord('q') or key == 27:
+                    print("\nCapture cancelled by user.")
+                    break
+
+        finally:
+            self.release()
+            cv2.destroyAllWindows()
+
+        return saved_path
 
     def show_preview(self, window_name: str = "3D Scanner - Camera Preview") -> None:
         """Open a live preview window. Press 'q' or ESC to exit."""
