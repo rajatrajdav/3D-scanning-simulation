@@ -1,22 +1,25 @@
 """
 3D Scanner - Main Entry Point
 
-Captures 3D scan images using your phone camera (via DroidCam or IP Webcam).
+Captures 3D scan images using DroidCam (phone camera via DroidCam PC Client).
 Workflow:
   1. Preview: Position your object in the camera frame
   2. Record: Rotate the object 360° while recording a video
   3. Extract: The tool extracts evenly-spaced frames at N angles
+  4. Reconstruct: Upload to Kiri Engine API for cloud 3D reconstruction
 
 Usage:
-    python main.py                    - Full scan (preview + record + extract)
-    python main.py --preview-only     - Just show camera preview to position object
-    python main.py --scan-only        - Record video + extract frames (no preview)
+    python main.py                          - Full scan (preview + record + extract)
+    python main.py --preview-only           - Show camera preview to position object
+    python main.py --scan-only              - Record video + extract frames (no preview)
+    python main.py --reconstruct            - Upload latest session to Kiri Engine for 3D reconstruction
+    python main.py --list-cameras           - Detect available camera indices
 
 Configuration:
     Edit scanner3d/config.py to set:
-    - CAMERA_MODE: "droidcam" (default) or "ipwebcam"
-    - DROIDCAM_INDEX: Camera index (default 0)
-    - NUM_ANGLES: Number of frames to extract (default 36)
+    - DROIDCAM_INDEX: Camera index (-1 = auto-detect, or 0, 1, 2...)
+    - NUM_ANGLES: Number of frames to extract (default: 70)
+    - KIRI_API_KEY: Your Kiri Engine API key
 """
 
 import argparse
@@ -28,30 +31,39 @@ from pathlib import Path
 # Add project root to path
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from scanner3d.scanner import Scanner3D, quick_scan
+from scanner3d.scanner import Scanner3D
 from scanner3d.camera import Camera
-from scanner3d.config import OUTPUT_DIR, NUM_ANGLES, DROIDCAM_INDEX, CAMERA_MODE
+from scanner3d.config import OUTPUT_DIR, NUM_ANGLES
+from scanner3d.kiri_reconstructor import reconstruct as run_reconstruction
 
 
 def parse_args():
     """Parse command line arguments."""
     parser = argparse.ArgumentParser(
-        description="3D Scanner - Capture images of an object from multiple angles",
+        description="3D Scanner - Capture images of an object from multiple angles using DroidCam",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  python main.py                        # Full scan (preview → record → extract)
-  python main.py --preview-only         # Just test camera connection
+  python main.py                        # Full scan (preview -> record -> extract)
+  python main.py --preview-only         # Just test DroidCam connection
   python main.py --scan-only            # Record + extract without preview
+  python main.py --list-cameras         # List available camera indices
+  python main.py --reconstruct          # Reconstruct latest session via Kiri Engine
+  python main.py --reconstruct 20260612_103734  # Reconstruct specific session
   python main.py --angles 60            # Extract 60 frames (every 6 degrees)
   python main.py --duration 45          # Record for 45 seconds
   python main.py --output myscan        # Save to custom directory
 
 Quick Start:
-  1. Install DroidCam on your phone and PC, connect them
-  2. Run: python main.py --preview-only
-  3. If camera works, run: python main.py
-  4. Rotate the object slowly when prompted
+  1. Install DroidCam on your phone and DroidCam PC Client on this PC
+  2. Connect PC Client to your phone (same WiFi network)
+  3. Run: python main.py --list-cameras
+  4. Note which index has video (typically 0, 1, or 2)
+  5. Set that index in scanner3d/config.py as DROIDCAM_INDEX
+  6. Run: python main.py --preview-only
+  7. If camera works, run: python main.py
+  8. Rotate the object slowly when prompted
+  9. Run: python main.py --reconstruct (uploads to Kiri Engine for 3D model)
         """
     )
 
@@ -86,7 +98,7 @@ Quick Start:
     parser.add_argument(
         "--list-cameras",
         action="store_true",
-        help="Scan and list all available camera indices"
+        help="Scan and list all available camera indices on this system"
     )
     parser.add_argument(
         "--capture-image",
@@ -96,7 +108,33 @@ Quick Start:
     parser.add_argument(
         "--capture-video",
         action="store_true",
-        help="Record a video from the DroidCam and save it as .avi file"
+        help="Record a video from DroidCam and save it as .avi file"
+    )
+    parser.add_argument(
+        "--reconstruct",
+        nargs="?",
+        const="auto",
+        default=None,
+        help="Run 3D reconstruction on captured session via Kiri Engine (default: latest). Pass session ID for specific."
+    )
+    parser.add_argument(
+        "--model-name",
+        type=str,
+        default=None,
+        help="Custom name for the output 3D model"
+    )
+    parser.add_argument(
+        "--quality",
+        type=str,
+        default="high",
+        choices=["draft", "medium", "high", "ultra"],
+        help="Kiri Engine reconstruction quality (default: high)"
+    )
+    parser.add_argument(
+        "--poll-interval",
+        type=int,
+        default=15,
+        help="Seconds between Kiri Engine status checks (default: 15)"
     )
 
     return parser.parse_args()
@@ -107,8 +145,8 @@ def run_preview():
     print("=" * 60)
     print("3D SCANNER - Camera Preview")
     print("=" * 60)
-    print("Connecting to camera via DroidCam...")
-    print("Make sure DroidCam is connected on your phone.")
+    print("Connecting to DroidCam...")
+    print("Make sure DroidCam PC Client is connected to your phone.")
     print()
 
     cam = Camera()
@@ -118,9 +156,10 @@ def run_preview():
         print(f"Error: {e}")
         print()
         print("Troubleshooting:")
-        print("1. Make sure DroidCam is running on your phone and PC")
-        print("2. Check DROIDCAM_INDEX in scanner3d/config.py")
-        print("3. Try setting CAMERA_MODE = 'ipwebcam' if using IP Webcam instead")
+        print("1. Make sure DroidCam PC Client is installed and running")
+        print("2. Connect PC Client to your phone (same WiFi network)")
+        print("3. Run: python main.py --list-cameras to find the correct camera index")
+        print("4. Set DROIDCAM_INDEX in scanner3d/config.py")
     finally:
         cam.release()
 
@@ -149,11 +188,12 @@ def run_scan(num_angles: int, duration: float, output_dir: str = None):
         )
 
         if paths:
-            print(f"\n✓ Scan complete! {len(paths)} images saved.")
+            print(f"\nScan complete! {len(paths)} images saved.")
             session_dir = scanner.output_dir / scanner.session_id
             print(f"  Location: {session_dir}")
+            print(f"\nNext step: Run 'python main.py --reconstruct' to create 3D model via Kiri Engine")
         else:
-            print("\n✗ Scan failed. Check camera connection.")
+            print("\nScan failed. Check DroidCam connection.")
 
         return paths
 
@@ -168,19 +208,19 @@ def run_capture_image():
     try:
         saved = cam.capture_image()
         if saved:
-            print(f"\n✓ Image saved to: {saved}")
+            print(f"\nImage saved to: {saved}")
     except Exception as e:
         print(f"Error: {e}")
         print()
         print("Troubleshooting:")
-        print("1. Make sure DroidCam is running on your phone and PC")
-        print("2. Check DROIDCAM_INDEX in scanner3d/config.py")
+        print("1. Make sure DroidCam PC Client is running and connected")
+        print("2. Run: python main.py --list-cameras to find the correct camera index")
     finally:
         cam.release()
 
 
 def run_capture_video(duration: float = 30.0):
-    """Record a video from the DroidCam."""
+    """Record a video from DroidCam."""
     timestamp = time.strftime("%Y%m%d_%H%M%S")
     output_dir = Path(OUTPUT_DIR) / f"video_{timestamp}"
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -190,13 +230,13 @@ def run_capture_video(duration: float = 30.0):
     try:
         recorded = cam.record_video(video_path, duration_seconds=duration)
         if recorded:
-            print(f"\n✓ Video saved to: {recorded}")
+            print(f"\nVideo saved to: {recorded}")
     except Exception as e:
         print(f"Error: {e}")
         print()
         print("Troubleshooting:")
-        print("1. Make sure DroidCam is running on your phone and PC")
-        print("2. Check DROIDCAM_INDEX in scanner3d/config.py")
+        print("1. Make sure DroidCam PC Client is running and connected")
+        print("2. Run: python main.py --list-cameras to find the correct camera index")
     finally:
         cam.release()
 
@@ -209,13 +249,13 @@ def main():
         print("=" * 60)
         print("3D SCANNER - Camera Detection")
         print("=" * 60)
-        print("DroidCam must be connected on your phone and PC.")
-        print("Look for which index has your phone camera feed.\n")
+        print("Make sure DroidCam PC Client is connected to your phone.\n")
         cameras = Camera.list_cameras(max_indices=10)
         print(f"\nFound {len(cameras)} camera(s).")
         if cameras:
-            print("\nTo use a specific camera, set DROIDCAM_INDEX in config.py")
-            print(f"Currently configured: DROIDCAM_INDEX = {DROIDCAM_INDEX}")
+            print("\nTo use a specific camera:")
+            print("  Set DROIDCAM_INDEX in scanner3d/config.py to the desired index")
+            print("  Or set it to -1 for auto-detect (tries 0, 1, 2, 3, 4)")
         return
 
     if args.capture_image:
@@ -224,6 +264,16 @@ def main():
 
     if args.capture_video:
         run_capture_video(duration=args.duration)
+        return
+
+    if args.reconstruct:
+        session_id = None if args.reconstruct == "auto" else args.reconstruct
+        run_reconstruction(
+            session_id=session_id,
+            output_name=args.model_name,
+            quality=args.quality,
+            poll_interval=args.poll_interval
+        )
         return
 
     # Create output directory
@@ -241,7 +291,8 @@ def main():
                 duration_seconds=args.duration
             )
             if paths:
-                print(f"\n✓ Scan complete! {len(paths)} images saved.")
+                print(f"\nScan complete! {len(paths)} images saved.")
+                print(f"\nNext step: Run 'python main.py --reconstruct' to create 3D model via Kiri Engine")
         finally:
             scanner.camera.release()
             scanner.cleanup()

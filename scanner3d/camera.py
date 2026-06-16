@@ -1,9 +1,18 @@
 """
-Camera module supporting DroidCam (local webcam) and IP Webcam.
+Camera module for DroidCam.
 New workflow:
-  1. Connect to camera (DroidCam or IP Webcam)
-  2. Record a video while user rotates the object 360°
-  3. Extract N evenly-spaced frames from the video as scan images
+  1. Install DroidCam PC Client on this computer
+  2. Connect DroidCam PC Client to your phone over WiFi (same network)
+  3. DroidCam PC Client creates a virtual camera (Windows DirectShow camera)
+  4. OpenCV accesses the virtual camera by index (auto-detect)
+  5. Record a video while user rotates the object 360°
+  6. Extract N evenly-spaced frames from the video as scan images
+
+How to use DroidCam:
+  1. Install DroidCam from https://droidcam.app on both phone and PC
+  2. On your phone: Open DroidCam app → note the IP shown (e.g., 10.141.200.242:4747)
+  3. On your PC: Open DroidCam Client → enter phone IP → Connect (WiFi mode)
+  4. The DroidCam virtual camera is now available to this application
 """
 
 import cv2
@@ -14,10 +23,7 @@ from typing import Optional, Tuple, List
 from pathlib import Path
 
 from .config import (
-    CAMERA_MODE,
     DROIDCAM_INDEX,
-    CAMERA_SOURCE,
-    SNAPSHOT_URL,
     RESOLUTION,
     VIDEO_RECORD_FPS,
     OUTPUT_DIR,
@@ -25,33 +31,37 @@ from .config import (
 
 
 class Camera:
-    """Unified camera interface supporting DroidCam (local) and IP Webcam."""
+    """Camera interface for DroidCam PC Client virtual camera.
 
-    def __init__(self, resolution: Tuple[int, int] = RESOLUTION):
+    DroidCam PC Client must be installed and connected to your phone.
+    The client creates a virtual DirectShow camera accessible via OpenCV.
+    Auto-detects the correct camera index by trying indices 0, 1, 2, etc.
+    """
+
+    def __init__(self, resolution: Tuple[int, int] = RESOLUTION,
+                 camera_index: int = DROIDCAM_INDEX):
         self.resolution = resolution
+        self.camera_index = camera_index  # -1 = auto-detect
         self.cap: Optional[cv2.VideoCapture] = None
         self.is_streaming = False
-        self.mode = CAMERA_MODE
 
     def open(self) -> bool:
-        """Open connection to the camera based on configured mode."""
-        if self.mode == "droidcam":
-            return self._open_droidcam()
-        else:
-            return self._open_ipwebcam()
+        """Open DroidCam virtual camera.
 
-    def _open_droidcam(self) -> bool:
-        """Open DroidCam virtual camera (local webcam).
-        Auto-detects camera index by trying 0, 1, 2, 3, 4 in sequence
-        and using the first second one that successfully opens.
+        If camera_index is -1 (auto-detect), tries indices 0-4 to find
+        a working camera. If set to a specific index, uses that.
+        DroidCam typically appears at index 1 or 2 when the PC Client
+        is connected.
         """
-        indices_to_try = [DROIDCAM_INDEX] if DROIDCAM_INDEX >= 0 else []
-        if DROIDCAM_INDEX >= 0:
-            # Also try other indices as fallback
+        if self.camera_index >= 0:
+            # Use specified index
+            indices_to_try = [self.camera_index]
+            # Add other indices as fallback
             for i in range(5):
                 if i not in indices_to_try:
                     indices_to_try.append(i)
         else:
+            # Auto-detect: try indices 0-4
             indices_to_try = list(range(5))
 
         for index in indices_to_try:
@@ -62,51 +72,13 @@ class Camera:
                 self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, self.resolution[0])
                 self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self.resolution[1])
                 self.is_streaming = True
-                print(f"[Camera] Camera opened at index {index}")
+                print(f"[Camera] DroidCam opened at index {index}")
                 return True
             self.cap = None
 
-        print("[Camera] Failed to open any camera (tried indices 0-4)")
-        return False
-
-    @staticmethod
-    def list_cameras(max_indices: int = 10) -> list:
-        """Scan camera indices and return list of (index, name) that work."""
-        import platform
-        available = []
-        print("Scanning for cameras...")
-        for i in range(max_indices):
-            cap = cv2.VideoCapture(i, cv2.CAP_DSHOW)
-            if not cap.isOpened():
-                cap = cv2.VideoCapture(i)
-            if cap.isOpened():
-                # Try to get camera name (DirectShow backends support this)
-                name = f"Camera {i}"
-                try:
-                    backend = cap.getBackendName() if hasattr(cap, 'getBackendName') else "Unknown"
-                    name = f"Camera {i} (backend: {backend})"
-                except:
-                    pass
-                print(f"  ✓ Index {i}: {name}")
-                available.append((i, name))
-                cap.release()
-            else:
-                print(f"  ✗ Index {i}: no camera")
-        return available
-
-    def _open_ipwebcam(self) -> bool:
-        """Open IP Webcam HTTP MJPEG stream."""
-        import requests  # only needed for IP Webcam mode
-
-        self.cap = cv2.VideoCapture(CAMERA_SOURCE, cv2.CAP_DSHOW)
-        if not self.cap.isOpened():
-            self.cap = cv2.VideoCapture(CAMERA_SOURCE)
-        if self.cap.isOpened():
-            self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, self.resolution[0])
-            self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self.resolution[1])
-            self.is_streaming = True
-            print(f"[Camera] IP Webcam opened: {CAMERA_SOURCE}")
-            return True
+        print("[Camera] Failed to open DroidCam virtual camera (tried indices 0-4)")
+        print("[Camera] Make sure DroidCam PC Client is installed and connected to your phone.")
+        print("[Camera] Download: https://droidcam.app")
         return False
 
     def read_frame(self) -> Optional[np.ndarray]:
@@ -327,7 +299,6 @@ class Camera:
             return []
 
         total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-        fps = cap.get(cv2.CAP_PROP_FPS)
 
         if total_frames == 0:
             print("[Camera] Video has no frames!")
@@ -389,6 +360,29 @@ class Camera:
 
         print(f"\nScan complete! {len(extracted)} images saved.")
         return extracted
+
+    @staticmethod
+    def list_cameras(max_indices: int = 10) -> list:
+        """Scan camera indices and return list of (index, name) that work."""
+        available = []
+        print("Scanning for cameras...")
+        for i in range(max_indices):
+            cap = cv2.VideoCapture(i, cv2.CAP_DSHOW)
+            if not cap.isOpened():
+                cap = cv2.VideoCapture(i)
+            if cap.isOpened():
+                name = f"Camera {i}"
+                try:
+                    backend = cap.getBackendName() if hasattr(cap, 'getBackendName') else "Unknown"
+                    name = f"Camera {i} (backend: {backend})"
+                except:
+                    pass
+                print(f"  ✓ Index {i}: {name}")
+                available.append((i, name))
+                cap.release()
+            else:
+                print(f"  ✗ Index {i}: no camera")
+        return available
 
     def _draw_guides(self, frame: np.ndarray) -> np.ndarray:
         """Draw alignment guides on the frame."""

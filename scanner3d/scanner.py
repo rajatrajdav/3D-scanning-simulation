@@ -85,12 +85,11 @@ class Scanner3D:
             output_dir=str(session_dir)
         )
 
-        # Clean up video file to save space
-        if os.path.exists(recorded):
-            os.remove(recorded)
-            print(f"[Scanner] Deleted temporary video: {recorded}")
+        # Store video path for Kiri Engine upload
+        self.video_path = recorded
 
         print(f"\nScan complete! {len(self.extracted_paths)} images saved.")
+        print(f"  Video: {recorded} (kept for Kiri Engine upload)")
         return self.extracted_paths
 
     def run_preprocess(self) -> List[str]:
