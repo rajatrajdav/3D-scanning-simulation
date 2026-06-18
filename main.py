@@ -33,7 +33,8 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from scanner3d.scanner import Scanner3D
 from scanner3d.camera import Camera
-from scanner3d.config import OUTPUT_DIR, NUM_ANGLES
+from scanner3d.phone_camera import PhoneCamera
+from scanner3d.config import OUTPUT_DIR, NUM_ANGLES, IP_WEBCAM_URL, USE_PHONE_CAMERA
 from scanner3d.kiri_reconstructor import reconstruct as run_reconstruction
 
 

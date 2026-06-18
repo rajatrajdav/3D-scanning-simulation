@@ -14,8 +14,9 @@ import time
 from typing import List, Optional
 from pathlib import Path
 
-from .config import NUM_ANGLES, OUTPUT_DIR
+from .config import NUM_ANGLES, OUTPUT_DIR, IP_WEBCAM_URL, USE_PHONE_CAMERA
 from .camera import Camera
+from .phone_camera import PhoneCamera
 
 
 class Scanner3D:
@@ -25,8 +26,23 @@ class Scanner3D:
     evenly-spaced frames for 3D reconstruction input.
     """
 
-    def __init__(self, camera: Optional[Camera] = None, output_dir: str = OUTPUT_DIR):
-        self.camera = camera or Camera()
+    def __init__(self, camera=None, output_dir: str = OUTPUT_DIR, use_phone: bool = None):
+        """
+        Args:
+            camera: Existing Camera/PhoneCamera instance. If None, auto-selects.
+            output_dir: Directory to save captured images.
+            use_phone: If True, use PhoneCamera (direct phone WiFi stream).
+                       If False, use Camera (DroidCam PC Client virtual camera).
+                       If None, uses USE_PHONE_CAMERA from config.
+        """
+        use_phone = USE_PHONE_CAMERA if use_phone is None else use_phone
+        
+        if use_phone:
+            print(f"[Scanner] Using phone camera directly: {IP_WEBCAM_URL}")
+            self.camera = camera or PhoneCamera()
+        else:
+            self.camera = camera or Camera()
+        
         self.output_dir = Path(output_dir)
         self.session_id: str = ""
         self.extracted_paths: List[str] = []

@@ -39,46 +39,85 @@ class Camera:
     """
 
     def __init__(self, resolution: Tuple[int, int] = RESOLUTION,
-                 camera_index: int = DROIDCAM_INDEX):
+                 camera_index: int = DROIDCAM_INDEX,
+                 max_indices: int = 10):
         self.resolution = resolution
         self.camera_index = camera_index  # -1 = auto-detect
         self.cap: Optional[cv2.VideoCapture] = None
         self.is_streaming = False
+        self.max_indices = max_indices
 
     def open(self) -> bool:
         """Open DroidCam virtual camera.
 
-        If camera_index is -1 (auto-detect), tries indices 0-4 to find
-        a working camera. If set to a specific index, uses that.
-        DroidCam typically appears at index 1 or 2 when the PC Client
-        is connected.
+        DroidCam PC Client must be installed and running, connected to your phone.
+        The client creates a virtual DirectShow camera.
+
+        Camera index strategy:
+        - If camera_index is -1 (auto-detect), tries indices in a smart order
+          (higher indices first since DroidCam often appears at 3-5, not 0-1)
+        - If set to a specific index, tries that one first
         """
+        # Build smart search order
         if self.camera_index >= 0:
-            # Use specified index
-            indices_to_try = [self.camera_index]
-            # Add other indices as fallback
-            for i in range(5):
+            # User specified an index, try it first
+            specified = self.camera_index
+            indices_to_try = [specified]
+            # Then try higher indices (DroidCam often appears at 3-5)
+            for i in range(self.max_indices):
                 if i not in indices_to_try:
                     indices_to_try.append(i)
         else:
-            # Auto-detect: try indices 0-4
-            indices_to_try = list(range(5))
+            # Auto-detect: prioritize higher indices where DroidCam appears
+            # DroidCam v2 typically creates camera at index 3, 4, or 5
+            indices_to_try = list(range(2, self.max_indices)) + [0, 1]
 
+        print(f"[Camera] Scanning camera indices: {indices_to_try}")
+        print(f"[Camera] NOTE: Make sure DroidCam PC Client is connected to your phone!")
+        print(f"[Camera]       The PC Client creates a virtual camera on this PC.")
+
+        tried = []
         for index in indices_to_try:
-            self.cap = cv2.VideoCapture(index, cv2.CAP_DSHOW)
-            if not self.cap.isOpened():
+            tried.append(index)
+            
+            # Try DirectShow backend first (Windows)
+            self.cap = cv2.VideoCapture(index, cv2.CAP_MSMF)
+            if not self.cap or not self.cap.isOpened():
+                self.cap = cv2.VideoCapture(index, cv2.CAP_DSHOW)
+            if not self.cap or not self.cap.isOpened():
                 self.cap = cv2.VideoCapture(index)
-            if self.cap.isOpened():
-                self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, self.resolution[0])
-                self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self.resolution[1])
-                self.is_streaming = True
-                print(f"[Camera] DroidCam opened at index {index}")
-                return True
-            self.cap = None
+                
+            if self.cap and self.cap.isOpened():
+                # Test if we can actually read a frame
+                ret, test_frame = self.cap.read()
+                if ret and test_frame is not None:
+                    self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, self.resolution[0])
+                    self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self.resolution[1])
+                    self.is_streaming = True
+                    h, w = test_frame.shape[:2]
+                    print(f"[Camera] ✓ Opened camera at index {index} ({w}x{h})")
+                    print(f"[Camera]   If this is your PC webcam (not phone), try:")
+                    print(f"[Camera]   - Setting DROIDCAM_INDEX in config.py to another index")
+                    print(f"[Camera]   - Run: python main.py --list-cameras")
+                    return True
+                else:
+                    self.cap.release()
+                    self.cap = None
+            if self.cap:
+                self.cap = None
 
-        print("[Camera] Failed to open DroidCam virtual camera (tried indices 0-4)")
-        print("[Camera] Make sure DroidCam PC Client is installed and connected to your phone.")
-        print("[Camera] Download: https://droidcam.app")
+        print(f"[Camera] Failed to open any camera (tried indices: {tried})")
+        print()
+        print("TROUBLESHOOTING:")
+        print("1. Make sure DroidCam PC Client is INSTALLED: https://droidcam.app")
+        print("2. Open DroidCam PC Client and CONNECT to your phone (WiFi mode)")
+        print("3. Enter phone IP: 10.138.159.251 in the PC Client")
+        print("4. Run: python main.py --list-cameras to find the right index")
+        print("5. Set that index as DROIDCAM_INDEX in scanner3d/config.py")
+        print()
+        print("ALTERNATIVE: Use the phone camera directly (no PC Client)")
+        print("  Set USE_PHONE_CAMERA = True in scanner3d/config.py")
+        print("  Then just keep DroidCam OPEN on your phone")
         return False
 
     def read_frame(self) -> Optional[np.ndarray]:

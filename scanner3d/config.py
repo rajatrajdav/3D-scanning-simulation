@@ -4,36 +4,47 @@ Configuration settings for the 3D Scanner project.
 
 import os
 
-# DroidCam settings
-# The IP shown in DroidCam phone app (for reference / web remote control)
-DROIDCAM_IP_URL = "http://10.141.200.242:4747"
+# ─── IP WEBCAM SETTINGS ───────────────────────────────────────────────────
+# Your phone running IP Webcam app on the same WiFi network
+# Download IP Webcam from Play Store: https://play.google.com/store/apps/details?id=com.pas.webcam
+# Open the app and tap "Start Server" - it shows the URL
+IP_WEBCAM_URL = "http://10.138.159.186:8080"
 
-# DroidCam PC Client creates a virtual camera on your system.
-# Auto-detect by trying indices 0, 1, 2, 3, 4 in sequence.
-# Or set a specific index manually (0 = built-in webcam, 1+ = DroidCam)
-DROIDCAM_INDEX = -1  # -1 = auto-detect, or set to 0, 1, 2 etc.
+# The MJPEG video stream path (default for IP Webcam)
+IP_WEBCAM_STREAM_PATH = "/video"
 
-# Scanning settings
-# HIGH QUALITY: 70 angles = every ~5 degrees for better reconstruction
-NUM_ANGLES = 70  # Number of photos to extract from video
-CAPTURE_DELAY = 0.2  # Seconds between captures (legacy, not used in video mode)
+# The snapshot/photo path (for taking still images)
+IP_WEBCAM_SNAPSHOT_PATH = "/photo.jpg"
 
-# Video recording settings
-VIDEO_RECORD_FPS = 60.0  # FPS for recording preview
-EXTRACT_AFTER_RECORD = True  # Extract frames from recorded video after recording
+# IP Webcam API endpoints
+IP_WEBCAM_API_FOCUS = "/focus"
+IP_WEBCAM_API_TORCH = "/torch"
+IP_WEBCAM_API_SETTINGS = "/settings"
+IP_WEBCAM_API_INFO = "/info"
 
-# HIGH QUALITY: Higher resolution for better feature matching
-RESOLUTION = (1280, 720)  # HD resolution (was 640x480)
+# ─── DROIDCAM SETTINGS (fallback) ─────────────────────────────────────────
+# Only used if IP Webcam is not available
+DROIDCAM_IP_URL = "http://10.138.159.186:8080"
+DROIDCAM_INDEX = -1
 
-# Image processing
+# Camera source preference
+USE_PHONE_CAMERA = True  # Uses IP Webcam or Phone camera
+
+# ─── SCANNING SETTINGS ────────────────────────────────────────────────────
+NUM_ANGLES = 70  # Number of photos to extract from video (every ~5°)
+CAPTURE_DELAY = 0.2
+VIDEO_RECORD_FPS = 60.0
+EXTRACT_AFTER_RECORD = True
+RESOLUTION = (1280, 720)
+
+# ─── IMAGE PROCESSING ─────────────────────────────────────────────────────
 USE_FEATURE_MATCHING = False
 MIN_FEATURE_MATCHES = 10
 
-# Output
+# ─── OUTPUT ───────────────────────────────────────────────────────────────
 OUTPUT_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "captures")
 MODEL_OUTPUT_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "models")
 
-# Kiri Engine API settings for cloud 3D reconstruction
-# Sign up at https://kiriengine.app/ to get your API key
+# ─── KIRI ENGINE API ──────────────────────────────────────────────────────
 KIRI_BASE_URL = "https://api.kiriengine.app/api/"
 KIRI_API_KEY = "kiri_fY_P0PneyULXY8u0TDrf-Lf6o5iy0-1DgkK9Ad430rs"
