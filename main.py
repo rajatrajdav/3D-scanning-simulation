@@ -13,7 +13,10 @@ Usage:
     python main.py --preview-only           - Show camera preview to position object
     python main.py --scan-only              - Record video + extract frames (no preview)
     python main.py --reconstruct            - Upload latest session to Kiri Engine for 3D reconstruction
+    python main.py --reconstruct --file-format STL  - Reconstruct to STL format
     python main.py --list-cameras           - Detect available camera indices
+    python main.py --live-tracking          - Live ORB feature tracking with point cloud visualization
+    python main.py --capture-image          - Capture a single still image
 
 Configuration:
     Edit scanner3d/config.py to set:
@@ -31,11 +34,27 @@ from pathlib import Path
 # Add project root to path
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from scanner3d.scanner import Scanner3D
 from scanner3d.camera import Camera
-from scanner3d.phone_camera import PhoneCamera
-from scanner3d.config import OUTPUT_DIR, NUM_ANGLES, IP_WEBCAM_URL, USE_PHONE_CAMERA
+from scanner3d.config import OUTPUT_DIR, NUM_ANGLES
 from scanner3d.kiri_reconstructor import reconstruct as run_reconstruction
+
+# Lazy import: LiveTracker3D requires open3d which is optional.
+# We import it only when --live-tracking is used to avoid breaking
+# the rest of the app when open3d is not installed.
+_LIVE_TRACKER_CLASS = None  # Cached reference to LiveTracker3D class
+
+def _get_live_tracker():
+    """Lazy import of LiveTracker3D. Returns the class or None if unavailable."""
+    global _LIVE_TRACKER_CLASS
+    if _LIVE_TRACKER_CLASS is not None:
+        return _LIVE_TRACKER_CLASS
+    try:
+        from scanner3d.scanner import LiveTracker3D
+        _LIVE_TRACKER_CLASS = LiveTracker3D
+        return _LIVE_TRACKER_CLASS
+    except (ImportError, ModuleNotFoundError):
+        _LIVE_TRACKER_CLASS = False
+        return None
 
 
 def parse_args():
@@ -50,10 +69,12 @@ Examples:
   python main.py --scan-only            # Record + extract without preview
   python main.py --list-cameras         # List available camera indices
   python main.py --reconstruct          # Reconstruct latest session via Kiri Engine
-  python main.py --reconstruct 20260612_103734  # Reconstruct specific session
+  python main.py --reconstruct --file-format STL  # Reconstruct to STL
+  python main.py --reconstruct 20260612_103734    # Reconstruct specific session
   python main.py --angles 60            # Extract 60 frames (every 6 degrees)
   python main.py --duration 45          # Record for 45 seconds
   python main.py --output myscan        # Save to custom directory
+  python main.py --live-tracking        # Live ORB feature tracking + point cloud
 
 Quick Start:
   1. Install DroidCam on your phone and DroidCam PC Client on this PC
@@ -112,6 +133,11 @@ Quick Start:
         help="Record a video from DroidCam and save it as .avi file"
     )
     parser.add_argument(
+        "--live-tracking",
+        action="store_true",
+        help="Start live ORB feature tracking with Open3D point cloud visualization (replaces old Scanner3D)"
+    )
+    parser.add_argument(
         "--reconstruct",
         nargs="?",
         const="auto",
@@ -125,6 +151,13 @@ Quick Start:
         help="Custom name for the output 3D model"
     )
     parser.add_argument(
+        "--file-format",
+        type=str,
+        default="OBJ",
+        choices=["OBJ", "STL", "GLB", "FBX", "PLY"],
+        help="Output 3D format for Kiri Engine reconstruction (default: OBJ)"
+    )
+    parser.add_argument(
         "--quality",
         type=str,
         default="high",
@@ -136,6 +169,11 @@ Quick Start:
         type=int,
         default=15,
         help="Seconds between Kiri Engine status checks (default: 15)"
+    )
+    parser.add_argument(
+        "--no-view",
+        action="store_true",
+        help="Skip opening the 3D viewer after reconstruction"
     )
 
     return parser.parse_args()
@@ -165,42 +203,73 @@ def run_preview():
         cam.release()
 
 
-def run_scan(num_angles: int, duration: float, output_dir: str = None):
-    """Run the full video-based scanning session."""
+def run_scan(num_angles: int, duration: float, output_dir: str = None, with_preview: bool = True):
+    """
+    Run the full video-based scanning session using Camera directly.
+
+    NOTE: The old Scanner3D class has been replaced by LiveTracker3D (for live
+    ORB point-cloud tracking). For the capture workflow used here (record video
+    + extract frames), Camera is used directly since Scanner3D no longer exists.
+
+    Args:
+        num_angles: Number of frames to extract from the video.
+        duration: Recording duration in seconds.
+        output_dir: Optional custom output directory.
+        with_preview: If True, show a preview window before recording.
+
+    Returns:
+        List of paths to extracted frame images, or empty list on failure.
+    """
     print("=" * 60)
     print("3D SCANNER - Video Scan Session")
     print("=" * 60)
 
-    scanner = Scanner3D()
-    if output_dir:
-        scanner.output_dir = Path(output_dir)
+    # Create session directory
+    timestamp = time.strftime("%Y%m%d_%H%M%S")
+    base_dir = Path(output_dir) if output_dir else Path(OUTPUT_DIR)
+    session_dir = base_dir / timestamp
+    session_dir.mkdir(parents=True, exist_ok=True)
 
+    cam = Camera()
     try:
-        # Step 1: Preview (optional)
-        print("\n[Step 1] Position your object in the camera view")
-        print("Close the preview window (press 'q') when ready.")
-        scanner.run_preview()
+        if not cam.open():
+            print("[Scan] Failed to open camera.")
+            return []
 
-        # Step 2: Video recording + frame extraction
+        # Step 1: Preview (optional)
+        if with_preview:
+            print("\n[Step 1] Position your object in the camera view")
+            print("Close the preview window (press 'q') when ready.")
+            cam.show_preview()
+
+        # Step 2: Video recording
         print("\n[Step 2] Recording video - rotate the object 360°...")
-        paths = scanner.run_video_scan(
-            num_angles=num_angles,
-            duration_seconds=duration
+        video_basename = str(session_dir / "scan_video")
+        recorded = cam.record_video(video_basename, duration_seconds=duration)
+
+        if not recorded:
+            print("[Scan] Video recording failed.")
+            return []
+
+        # Step 3: Frame extraction
+        print("\n[Step 3] Extracting evenly-spaced frames...")
+        extracted = cam.extract_frames_from_video(
+            recorded,
+            num_frames=num_angles,
+            output_dir=str(session_dir)
         )
 
-        if paths:
-            print(f"\nScan complete! {len(paths)} images saved.")
-            session_dir = scanner.output_dir / scanner.session_id
+        if extracted:
+            print(f"\nScan complete! {len(extracted)} images saved.")
             print(f"  Location: {session_dir}")
             print(f"\nNext step: Run 'python main.py --reconstruct' to create 3D model via Kiri Engine")
         else:
-            print("\nScan failed. Check DroidCam connection.")
+            print("\nFrame extraction failed.")
 
-        return paths
+        return extracted
 
     finally:
-        scanner.camera.release()
-        scanner.cleanup()
+        cam.release()
 
 
 def run_capture_image():
@@ -242,6 +311,42 @@ def run_capture_video(duration: float = 30.0):
         cam.release()
 
 
+def run_live_tracking_mode():
+    """
+    Run the new LiveTracker3D for live ORB feature tracking + Open3D point cloud.
+
+    This replaces the old Scanner3D class which no longer exists in scanner.py.
+    LiveTracker3D provides real-time feature detection/tracking via Lucas-Kanade
+    optical flow and renders a live, persistent point cloud in Open3D.
+    """
+    print("=" * 60)
+    print("3D SCANNER - Live ORB Feature Tracking")
+    print("=" * 60)
+    print("This mode provides real-time feature tracking with Open3D point cloud visualization.")
+    print("Press 'q' in the video window to quit.\n")
+
+    LiveTracker3D = _get_live_tracker()
+    if LiveTracker3D is None:
+        print("Error: LiveTracker3D not available (open3d may not be installed).")
+        print("  Install: pip install open3d")
+        print("  Or use the standard scan workflow: python main.py")
+        return
+
+    tracker = LiveTracker3D()
+    try:
+        tracker.run()
+    except Exception as e:
+        print(f"\nError in live tracking: {e}")
+        print()
+        print("Troubleshooting:")
+        print("1. Make sure camera is connected and working")
+        print("2. Run: python main.py --list-cameras to find the correct camera index")
+        print("3. Set DROIDCAM_INDEX in scanner3d/config.py")
+    finally:
+        if hasattr(tracker, '_shutdown'):
+            tracker._shutdown()
+
+
 def main():
     """Main entry point."""
     args = parse_args()
@@ -259,6 +364,10 @@ def main():
             print("  Or set it to -1 for auto-detect (tries 0, 1, 2, 3, 4)")
         return
 
+    if args.live_tracking:
+        run_live_tracking_mode()
+        return
+
     if args.capture_image:
         run_capture_image()
         return
@@ -273,6 +382,8 @@ def main():
             session_id=session_id,
             output_name=args.model_name,
             quality=args.quality,
+            file_format=args.file_format,
+            auto_view=not args.no_view,
             poll_interval=args.poll_interval
         )
         return
@@ -284,23 +395,21 @@ def main():
         run_preview()
 
     elif args.scan_only:
-        # Scan without preview
-        scanner = Scanner3D()
-        try:
-            paths = scanner.run_video_scan(
-                num_angles=args.angles,
-                duration_seconds=args.duration
-            )
-            if paths:
-                print(f"\nScan complete! {len(paths)} images saved.")
-                print(f"\nNext step: Run 'python main.py --reconstruct' to create 3D model via Kiri Engine")
-        finally:
-            scanner.camera.release()
-            scanner.cleanup()
+        run_scan(
+            args.angles,
+            args.duration,
+            output_dir=args.output,
+            with_preview=False
+        )
 
     else:
         # Full scan with preview
-        run_scan(args.angles, args.duration, output_dir=args.output)
+        run_scan(
+            args.angles,
+            args.duration,
+            output_dir=args.output,
+            with_preview=True
+        )
 
 
 if __name__ == "__main__":

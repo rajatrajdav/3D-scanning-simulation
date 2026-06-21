@@ -4,11 +4,13 @@
   "num_angles": 70,
   "recording_duration": 30,
   "theme": "dark",
-  "resolution": "1280x720",
   "bg_removal": false,
-  "scanning_grid": true,
   "output_format": "STL",
-  "aruco_tracking": false,
+  "recon_quality": "high",
   "marker_size_cm": 5.0,
-  "last_session": "20260621_011042"
+  "aruco_enabled": true,
+  "resolution": "1280x720",
+  "scanning_grid": true,
+  "aruco_tracking": false,
+  "last_session": "20260621_210753"
 }

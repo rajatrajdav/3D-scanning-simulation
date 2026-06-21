@@ -1,186 +1,288 @@
 """
-3D Scanner core module.
-New workflow:
-  1. Preview camera to position object
-  2. Record a video while rotating the object 360°
-  3. Extract evenly-spaced frames from the video
-  4. Save extracted frames as scan images
+Real-Time Visual Odometry & Point Cloud Visualization Module
+==============================================================
+
+Live tracking, video capture guidance, and point-cloud visualization for
+the 3D scanner project. Tracks ORB features via Lucas-Kanade optical
+flow, estimates relative depth from pixel-motion magnitude, and renders
+a live, persistent point cloud in Open3D while overlaying an HUD on the
+OpenCV camera window.
+
+Architecture
+------------
+1. Video Ingestion      : cv2.VideoCapture (webcam index or video file path)
+2. Feature Detection    : cv2.ORB_create
+3. Feature Tracking     : cv2.calcOpticalFlowPyrLK (sparse Lucas-Kanade)
+4. 2D -> 3D Projection  : depth ~ 1 / ||(dx, dy)||  (relative, simulated)
+5. Visualization        : o3d.visualization.Visualizer (non-blocking loop)
+6. HUD / Guidance       : cv2.drawKeypoints + cv2.putText overlay
 """
+
+import time
 
 import cv2
 import numpy as np
-import os
-import time
-from typing import List, Optional
-from pathlib import Path
-
-from .config import NUM_ANGLES, OUTPUT_DIR, IP_WEBCAM_URL, USE_PHONE_CAMERA
-from .camera import Camera
-from .phone_camera import PhoneCamera
+import open3d as o3d
 
 
-class Scanner3D:
+# --------------------------------------------------------------------------- #
+# Configuration
+# --------------------------------------------------------------------------- #
+VIDEO_SOURCE = 0          # 0 = default webcam, or a path to an .mp4 file
+MAX_POINTS = 20_000       # Hard cap on point-cloud size (memory guard)
+MIN_TRACK_FEATURES = 50   # Re-detect ORB features once tracked set thins below this
+ORB_FEATURES = 500        # Max ORB features requested per detection pass
+DEPTH_SCALE = 5000.0      # Tunes how "deep" small pixel motions appear
+MIN_DISPLACEMENT = 0.5    # px, floor for displacement magnitude (avoid div-by-~0)
+
+LK_PARAMS = dict(
+    winSize=(21, 21),
+    maxLevel=3,
+    criteria=(cv2.TERM_CRITERIA_EPS | cv2.TERM_CRITERIA_COUNT, 30, 0.01),
+)
+
+
+class LiveTracker3D:
     """
-    Orchestrates the 3D scanning process using video-based capture.
-    Records a video while user rotates the object, then extracts
-    evenly-spaced frames for 3D reconstruction input.
+    Real-time ORB + Lucas-Kanade feature tracker that back-projects 2D
+    pixel motion into a relative 3D point cloud, rendered live in Open3D
+    alongside an annotated OpenCV preview window.
     """
 
-    def __init__(self, camera=None, output_dir: str = OUTPUT_DIR, use_phone: bool = None):
+    def __init__(self, video_source=VIDEO_SOURCE, max_points=MAX_POINTS):
+        self.video_source = video_source
+        self.max_points = max_points
+
+        # --- OpenCV capture setup ---
+        self.cap = cv2.VideoCapture(self.video_source)
+        if not self.cap.isOpened():
+            raise RuntimeError(f"[LiveTracker3D] Could not open video source: {video_source}")
+
+        # --- ORB detector ---
+        self.orb = cv2.ORB_create(nfeatures=ORB_FEATURES)
+
+        # --- Tracking state ---
+        self.prev_gray = None
+        self.prev_pts = None  # Nx1x2 float32, points currently tracked
+
+        # --- Point-cloud accumulation buffers ---
+        self.points_xyz = np.empty((0, 3), dtype=np.float32)   # Nx3
+        self.points_rgb = np.empty((0, 3), dtype=np.float64)   # Nx3 (Open3D wants float64 colors)
+
+        # --- Open3D visualizer setup (non-blocking) ---
+        self.pcd = o3d.geometry.PointCloud()
+        self.vis = o3d.visualization.Visualizer()
+        self.vis.create_window(window_name="3D Scanner - Live Point Cloud", width=960, height=720)
+        self.vis.add_geometry(self.pcd)
+
+        # FPS bookkeeping
+        self._last_tick = time.time()
+        self._fps = 0.0
+
+    # ------------------------------------------------------------------ #
+    # Feature detection / re-seeding
+    # ------------------------------------------------------------------ #
+    def _detect_features(self, gray_frame):
+        """Detect ORB keypoints on a grayscale frame and return them as an
+        Nx1x2 float32 array usable by cv2.calcOpticalFlowPyrLK, alongside
+        the raw cv2.KeyPoint list (used for the green HUD overlay)."""
+        keypoints = self.orb.detect(gray_frame, None)
+        if not keypoints:
+            return None, []
+        pts = np.array([kp.pt for kp in keypoints], dtype=np.float32).reshape(-1, 1, 2)
+        return pts, keypoints
+
+    # ------------------------------------------------------------------ #
+    # 2D motion -> relative 3D back-projection
+    # ------------------------------------------------------------------ #
+    def _backproject(self, prev_pts, curr_pts, frame_shape):
         """
-        Args:
-            camera: Existing Camera/PhoneCamera instance. If None, auto-selects.
-            output_dir: Directory to save captured images.
-            use_phone: If True, use PhoneCamera (direct phone WiFi stream).
-                       If False, use Camera (DroidCam PC Client virtual camera).
-                       If None, uses USE_PHONE_CAMERA from config.
+        Convert 2D pixel displacement vectors into relative (X, Y, Z)
+        coordinates.
+
+        X, Y : current pixel position, recentered around the frame center
+               and normalized to a roughly [-1, 1] range.
+        Z    : estimated depth, modeled as inversely proportional to the
+               magnitude of the optical-flow displacement vector. Large
+               pixel motion -> object assumed closer (smaller Z); small
+               motion -> object assumed farther (larger Z). This is a
+               *relative*, simulated depth -- not a metric measurement.
         """
-        use_phone = USE_PHONE_CAMERA if use_phone is None else use_phone
-        
-        if use_phone:
-            print(f"[Scanner] Using phone camera directly: {IP_WEBCAM_URL}")
-            self.camera = camera or PhoneCamera()
-        else:
-            self.camera = camera or Camera()
-        
-        self.output_dir = Path(output_dir)
-        self.session_id: str = ""
-        self.extracted_paths: List[str] = []
+        h, w = frame_shape[:2]
+        cx, cy = w / 2.0, h / 2.0
 
-    def run_preview(self) -> None:
-        """Open camera preview with guides for positioning the object."""
-        print("Camera preview mode.")
-        print("Position the object in the center, then press 'q' to close.")
-        self.camera.show_preview()
+        prev_xy = prev_pts.reshape(-1, 2)
+        curr_xy = curr_pts.reshape(-1, 2)
 
-    def run_video_scan(self, num_angles: int = NUM_ANGLES,
-                       duration_seconds: float = 30.0) -> List[str]:
+        disp = curr_xy - prev_xy                  # (dx, dy) per point
+        mag = np.linalg.norm(disp, axis=1)         # displacement magnitude
+        mag = np.maximum(mag, MIN_DISPLACEMENT)    # guard against div-by-0
+
+        # Inverse relationship: small motion -> far (large Z), large motion -> near (small Z)
+        z = DEPTH_SCALE / mag
+
+        # Recenter & normalize X, Y by frame dimensions for a stable relative scale
+        x = (curr_xy[:, 0] - cx) / max(w, h)
+        y = (curr_xy[:, 1] - cy) / max(w, h)
+
+        xyz = np.stack([x, y, z], axis=1).astype(np.float32)
+        return xyz, mag
+
+    @staticmethod
+    def _depth_to_color(z_values):
         """
-        Run a video-based 360° scan.
-        
-        Args:
-            num_angles: Number of frames to extract (default 36 = every 10°)
-            duration_seconds: Recording duration in seconds
-            
-        Returns:
-            List of file paths to extracted frame images
+        Map depth (Z) values to an RGB gradient (Green = near, Red = far)
+        for the Open3D point cloud, normalized per-batch.
         """
-        self.session_id = time.strftime("%Y%m%d_%H%M%S")
-        session_dir = self.output_dir / self.session_id
-        session_dir.mkdir(parents=True, exist_ok=True)
+        if len(z_values) == 0:
+            return np.empty((0, 3), dtype=np.float64)
+        z_min, z_max = float(np.min(z_values)), float(np.max(z_values))
+        spread = max(z_max - z_min, 1e-6)
+        norm = (z_values - z_min) / spread  # 0 (near) -> 1 (far)
+        red = norm
+        green = 1.0 - norm
+        blue = np.zeros_like(norm)
+        return np.stack([red, green, blue], axis=1).astype(np.float64)
 
-        print("=" * 60)
-        print("3D VIDEO SCAN SESSION")
-        print("=" * 60)
-        print(f"Session ID: {self.session_id}")
-        print(f"Angles to extract: {num_angles}")
-        print(f"Output: {session_dir}")
-        print()
+    # ------------------------------------------------------------------ #
+    # Point-cloud buffer management (memory-capped sliding window)
+    # ------------------------------------------------------------------ #
+    def _append_points(self, new_xyz, new_rgb):
+        """Append new points to the persistent cloud, trimming the oldest
+        entries once max_points is exceeded (FIFO sliding window) to keep
+        memory bounded and rendering fast."""
+        self.points_xyz = np.vstack([self.points_xyz, new_xyz])
+        self.points_rgb = np.vstack([self.points_rgb, new_rgb])
 
-        # Step 1: Preview
-        print("[Step 1] Position your object in the camera view")
-        print("Close the preview window (press 'q') when ready.")
-        self.camera.show_preview()
+        if len(self.points_xyz) > self.max_points:
+            excess = len(self.points_xyz) - self.max_points
+            self.points_xyz = self.points_xyz[excess:]
+            self.points_rgb = self.points_rgb[excess:]
 
-        # Step 2: Record video while rotating the object
-        print("\n[Step 2] Recording video - rotate the object 360°")
-        video_path = os.path.join(str(session_dir), "scan_video")
-        recorded = self.camera.record_video(
-            video_path,
-            duration_seconds=duration_seconds
-        )
-        if not recorded:
-            print("[Scanner] Video recording failed.")
-            return []
+    def _refresh_geometry(self):
+        """Push the latest point/colour buffers into the Open3D point cloud
+        and notify the visualizer renderer."""
+        self.pcd.points = o3d.utility.Vector3dVector(self.points_xyz.astype(np.float64))
+        self.pcd.colors = o3d.utility.Vector3dVector(self.points_rgb)
+        self.vis.update_geometry(self.pcd)
 
-        # Step 3: Extract evenly-spaced frames
-        print("\n[Step 3] Extracting frames from video...")
-        self.extracted_paths = self.camera.extract_frames_from_video(
-            recorded,
-            num_frames=num_angles,
-            output_dir=str(session_dir)
-        )
+    # ------------------------------------------------------------------ #
+    # HUD overlay
+    # ------------------------------------------------------------------ #
+    def _draw_hud(self, frame, keypoints, tracking_count):
+        """Draw tracked keypoints (green) and an informational HUD text
+        overlay onto the OpenCV preview frame."""
+        if keypoints:
+            frame = cv2.drawKeypoints(
+                frame, keypoints, None,
+                color=(0, 255, 0),
+                flags=cv2.DRAW_MATCHES_FLAGS_DRAW_RICH_KEYPOINTS,
+            )
 
-        # Store video path for Kiri Engine upload
-        self.video_path = recorded
+        cv2.putText(frame, f"Points Mapped: {len(self.points_xyz)}",
+                    (15, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2)
+        cv2.putText(frame, f"Tracking Features: {tracking_count}",
+                    (15, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2)
+        cv2.putText(frame, f"FPS: {self._fps:.1f}",
+                    (15, 90), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2)
+        cv2.putText(frame, "Press 'q' to quit",
+                    (15, frame.shape[0] - 15), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (200, 200, 200), 1)
+        return frame
 
-        print(f"\nScan complete! {len(self.extracted_paths)} images saved.")
-        print(f"  Video: {recorded} (kept for Kiri Engine upload)")
-        return self.extracted_paths
+    def _update_fps(self):
+        now = time.time()
+        dt = now - self._last_tick
+        self._last_tick = now
+        if dt > 0:
+            instant_fps = 1.0 / dt
+            # Light exponential smoothing so the readout isn't jumpy
+            self._fps = self._fps * 0.9 + instant_fps * 0.1 if self._fps else instant_fps
 
-    def run_preprocess(self) -> List[str]:
-        """
-        Apply preprocessing (denoise, enhance contrast) to extracted frames.
-        Saves processed versions alongside originals.
-        
-        Returns:
-            List of paths to processed images
-        """
-        if not self.extracted_paths:
-            print("[Scanner] No frames to preprocess.")
-            return []
+    # ------------------------------------------------------------------ #
+    # Main loop
+    # ------------------------------------------------------------------ #
+    def run(self):
+        """Main capture/track/visualize loop. Runs until 'q' is pressed or
+        the video source is exhausted, then releases all resources."""
+        print("[LiveTracker3D] Starting live tracking. Press 'q' in the video window to quit.")
 
-        processed_paths = []
-        for img_path in self.extracted_paths:
-            frame = cv2.imread(img_path)
-            if frame is None:
-                continue
+        try:
+            while True:
+                ok, frame = self.cap.read()
+                if not ok:
+                    print("[LiveTracker3D] End of stream / capture failed.")
+                    break
 
-            processed = self._preprocess_frame(frame)
+                gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+                display_keypoints = []
 
-            # Save processed version with _processed suffix
-            p = Path(img_path)
-            proc_path = str(p.parent / f"{p.stem}_processed{p.suffix}")
-            cv2.imwrite(proc_path, processed)
-            processed_paths.append(proc_path)
+                if self.prev_gray is None or self.prev_pts is None or len(self.prev_pts) < MIN_TRACK_FEATURES:
+                    # (Re)seed features on the first frame, or whenever the
+                    # tracked set has thinned out too much.
+                    self.prev_pts, display_keypoints = self._detect_features(gray)
+                    self.prev_gray = gray
+                    tracking_count = len(display_keypoints)
 
-        print(f"[Scanner] Preprocessed {len(processed_paths)} images.")
-        return processed_paths
+                else:
+                    # Track existing points forward with pyramidal Lucas-Kanade.
+                    curr_pts, status, _err = cv2.calcOpticalFlowPyrLK(
+                        self.prev_gray, gray, self.prev_pts, None, **LK_PARAMS
+                    )
 
-    def _preprocess_frame(self, frame: np.ndarray) -> np.ndarray:
-        """
-        Preprocess a captured frame:
-        - Mild denoising
-        - Contrast enhancement (CLAHE)
-        """
-        denoised = cv2.fastNlMeansDenoisingColored(frame, None, 10, 10, 7, 21)
-        lab = cv2.cvtColor(denoised, cv2.COLOR_BGR2LAB)
-        l, a, b = cv2.split(lab)
-        clahe = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(8, 8))
-        l = clahe.apply(l)
-        lab = cv2.merge([l, a, b])
-        enhanced = cv2.cvtColor(lab, cv2.COLOR_LAB2BGR)
-        return enhanced
+                    if curr_pts is not None and status is not None:
+                        status = status.reshape(-1)
+                        good_prev = self.prev_pts.reshape(-1, 2)[status == 1]
+                        good_curr = curr_pts.reshape(-1, 2)[status == 1]
 
-    def cleanup(self) -> None:
-        """Clear extracted paths from memory."""
-        self.extracted_paths.clear()
+                        if len(good_curr) > 0:
+                            xyz, _mag = self._backproject(good_prev, good_curr, frame.shape)
+                            rgb = self._depth_to_color(xyz[:, 2])
+                            self._append_points(xyz, rgb)
+
+                            # Build KeyPoint objects purely for the green HUD overlay
+                            display_keypoints = [cv2.KeyPoint(float(p[0]), float(p[1]), 5)
+                                                  for p in good_curr]
+
+                        # Carry forward only the successfully tracked points
+                        self.prev_pts = (good_curr.reshape(-1, 1, 2).astype(np.float32)
+                                          if len(good_curr) > 0 else None)
+
+                    tracking_count = 0 if self.prev_pts is None else len(self.prev_pts)
+                    self.prev_gray = gray
+
+                # --- Refresh both UIs ---
+                self._refresh_geometry()
+                self.vis.poll_events()
+                self.vis.update_renderer()
+
+                self._update_fps()
+                annotated = self._draw_hud(frame, display_keypoints, tracking_count)
+                cv2.imshow("3D Scanner - Live Tracking", annotated)
+
+                if cv2.waitKey(1) & 0xFF == ord('q'):
+                    print("[LiveTracker3D] Quit requested by user.")
+                    break
+
+        finally:
+            self._shutdown()
+
+    # ------------------------------------------------------------------ #
+    # Cleanup
+    # ------------------------------------------------------------------ #
+    def _shutdown(self):
+        """Release every system resource opened by this tracker."""
+        self.cap.release()
+        cv2.destroyAllWindows()
+        self.vis.destroy_window()
+        print(f"[LiveTracker3D] Shutdown complete. Total points captured: {len(self.points_xyz)}")
 
 
-def quick_scan():
-    """
-    Convenience function to run a quick video-based scan end-to-end.
-    """
-    scanner = Scanner3D()
-    try:
-        # Step 1: Preview
-        print("Step 1: Position your object in the camera view")
-        scanner.run_preview()
-
-        # Step 2: Video scan
-        print("\nStep 2: Scanning the object via video...")
-        paths = scanner.run_video_scan()
-
-        # Step 3: Preprocess
-        print("\nStep 3: Preprocessing images...")
-        processed = scanner.run_preprocess()
-
-        print(f"\n✓ Scan complete! {len(paths)} images captured.")
-        return paths
-    finally:
-        scanner.camera.release()
-        scanner.cleanup()
+def run_live_tracking(video_source=VIDEO_SOURCE):
+    """Convenience entry point, mirroring the style of quick_scan() in
+    scanner_core.py -- instantiate and run the tracker end-to-end."""
+    tracker = LiveTracker3D(video_source=video_source)
+    tracker.run()
 
 
 if __name__ == "__main__":
-    quick_scan()
+    run_live_tracking()
