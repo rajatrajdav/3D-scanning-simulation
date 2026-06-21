@@ -1,9 +1,14 @@
 {
-  "webcam_url": "http://10.138.159.186:8080",
+  "webcam_url": "http://192.0.0.4:8080",
   "kiri_api_key": "kiri_fY_P0PneyULXY8u0TDrf-Lf6o5iy0-1DgkK9Ad430rs",
-  "num_angles": 90,
-  "recording_duration": 60,
+  "num_angles": 70,
+  "recording_duration": 30,
   "theme": "dark",
   "resolution": "1280x720",
-  "camera_index": -1
+  "bg_removal": false,
+  "scanning_grid": true,
+  "output_format": "STL",
+  "aruco_tracking": false,
+  "marker_size_cm": 5.0,
+  "last_session": "20260621_011042"
 }

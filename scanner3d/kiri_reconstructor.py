@@ -331,7 +331,9 @@ def find_latest_session() -> Optional[str]:
 
 def reconstruct(session_id: str = None, output_name: str = None,
                 quality: str = "high",
-                poll_interval: int = 15):
+                poll_interval: int = 15,
+                progress_callback=None,
+                file_format: str = "OBJ"):
     """
     Run Kiri Engine reconstruction on a captured session's video.
 
@@ -341,6 +343,8 @@ def reconstruct(session_id: str = None, output_name: str = None,
         output_name: Custom name for the output model.
         quality: Reconstruction quality ("draft", "medium", "high", "ultra")
         poll_interval: Kept for backward compatibility (unused in new API)
+        progress_callback: Optional callback function(progress_percent) for UI updates
+        file_format: Output format ("OBJ", "STL", "GLB", "FBX", "PLY")
     """
     if session_id:
         session_dir = Path(OUTPUT_DIR) / session_id
@@ -370,13 +374,21 @@ def reconstruct(session_id: str = None, output_name: str = None,
 
     # Run reconstruction via Kiri Engine
     recon = KiriReconstructor()
-    return recon.run(
+    if progress_callback:
+        progress_callback(10)
+    
+    result = recon.run(
         str(session_dir),
         output_name=output_name,
-        file_format="OBJ",
+        file_format=file_format,  # Use the format passed from GUI
         model_quality=model_quality,
         texture_quality=texture_quality
     )
+    
+    if progress_callback:
+        progress_callback(100)
+    
+    return result
 
 
 def main():
