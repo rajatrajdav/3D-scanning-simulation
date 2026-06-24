@@ -51,9 +51,10 @@ DEFAULT_CONFIG = {
     "theme": "dark",
     "bg_removal": False,
     "output_format": "OBJ",
-    "recon_quality": "high",
+    "recon_quality": "ultra",
     "marker_size_cm": 5.0,
     "aruco_enabled": True,
+    "video_quality": 100,
 }
 
 
@@ -195,10 +196,7 @@ class CameraStream:
                 else:
                     ret, frame = False, None
             if ret and frame is not None:
-                h, w = frame.shape[:2]
-                if w > 640:
-                    scale = 640 / w
-                    frame = cv2.resize(frame, (int(w * scale), int(h * scale)), cv2.INTER_AREA)
+                # Keep full resolution frame for recording quality
                 if self.frame_queue.full():
                     try:
                         self.frame_queue.get_nowait()
@@ -366,8 +364,27 @@ class ScannerGUI:
         Label(ctrl_header, text="🎛 Control Panel", bg=self.theme["bg_secondary"],
               fg=self.theme["text_primary"], font=("Segoe UI", 13, "bold")).pack(side="left")
 
-        ctrl_content = Frame(control_panel, bg=self.theme["bg_secondary"])
-        ctrl_content.pack(fill="both", expand=True, padx=20, pady=12)
+        # Scrollable control content
+        ctrl_canvas = Canvas(control_panel, bg=self.theme["bg_secondary"], highlightthickness=0)
+        ctrl_scrollbar = ttk.Scrollbar(control_panel, orient="vertical", command=ctrl_canvas.yview)
+        ctrl_content = Frame(ctrl_canvas, bg=self.theme["bg_secondary"])
+
+        ctrl_content.bind(
+            "<Configure>",
+            lambda e, c=ctrl_canvas: c.configure(scrollregion=c.bbox("all"))
+        )
+
+        ctrl_canvas.create_window((0, 0), window=ctrl_content, anchor="nw", width=300)
+        ctrl_canvas.configure(yscrollcommand=ctrl_scrollbar.set)
+
+        ctrl_canvas.pack(side="left", fill="both", expand=True, padx=(20, 0), pady=12)
+        ctrl_scrollbar.pack(side="right", fill="y", pady=12)
+
+        # Mouse wheel for control panel
+        def _on_ctrl_mousewheel(event):
+            ctrl_canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
+        ctrl_canvas.bind("<Enter>", lambda e: ctrl_canvas.bind_all("<MouseWheel>", _on_ctrl_mousewheel))
+        ctrl_canvas.bind("<Leave>", lambda e: ctrl_canvas.unbind_all("<MouseWheel>"))
 
         # ── Device Section ──
         self._section_label(ctrl_content, "📱 Device")
@@ -543,7 +560,7 @@ class ScannerGUI:
         self._show_placeholder(
             "📱 Camera Not Found\n\n"
             "1. Install IP Webcam from Play Store\n"
-            "2. Open the app → tap Start Server\n"
+            "2. Open the app \u2192 tap Start Server\n"
             "3. Phone and PC on same WiFi\n\n"
             f"Expected: {self.config.get('webcam_url', IP_WEBCAM_URL)}/video\n\n"
             "Click Settings to configure IP"
@@ -662,7 +679,7 @@ class ScannerGUI:
         self.scan_btn.config(text="⏳ Scanning...", state="disabled")
         self.stop_btn.config(state="normal")
         self.live_tracker_btn.config(state="disabled")
-        self._set_status("SCANNING — rotate the object 360°", "busy")
+        self._set_status("SCANNING \u2014 rotate the object 360\u00b0", "busy")
 
         # Create session
         sid = time.strftime("%Y%m%d_%H%M%S")
@@ -679,7 +696,7 @@ class ScannerGUI:
         self._update_recording_status()
 
     def _update_capture_tracking(self, frame):
-        """Update capture mask to track which areas have been scanned."""
+        """Update capture mask to track which areas have been scanned (visual overlay only)."""
         try:
             if frame is None:
                 return
@@ -705,9 +722,7 @@ class ScannerGUI:
                 captured_pixels = np.sum(self._capture_mask > 0.1)
                 total_pixels = h * w
                 self._capture_percentage = min(100.0, (captured_pixels / total_pixels) * 100.0 * 4.0)
-                if self._capture_percentage >= self._scan_complete_threshold:
-                    print(f"[SmartScan] Scan complete! {self._capture_percentage:.1f}% captured")
-                    self.root.after(0, self._finish_recording)
+                # NOTE: Recording duration is now controlled ONLY by the timer in _update_recording_status
         except Exception as e:
             print(f"[CaptureTracking] Error: {e}")
 
@@ -717,14 +732,13 @@ class ScannerGUI:
         elapsed = time.time() - self._record_start
         remaining = max(0, self._scan_duration - elapsed)
 
-        capture_progress = int(self._capture_percentage)
-        self.progress_var.set(capture_progress)
-        self.progress_label.config(text=f"{capture_progress}% captured")
-        self._set_status(f"🎥 Scanning — {self._capture_percentage:.1f}% — {len(self._record_frames)} frames", "busy")
+        # Use elapsed time for progress, not smart tracking
+        progress_pct = int((elapsed / self._scan_duration) * 100) if self._scan_duration > 0 else 0
+        self.progress_var.set(progress_pct)
+        self.progress_label.config(text=f"{progress_pct}% ({remaining:.0f}s left)")
+        self._set_status(f"🎥 Recording {elapsed:.0f}s / {self._scan_duration}s \u2014 {len(self._record_frames)} frames", "busy")
 
-        if self._capture_percentage >= self._scan_complete_threshold:
-            self._finish_recording()
-        elif elapsed >= self._scan_duration:
+        if elapsed >= self._scan_duration:
             self._finish_recording()
         else:
             self.root.after(500, self._update_recording_status)
@@ -739,13 +753,24 @@ class ScannerGUI:
         def worker():
             try:
                 sdir = str(self._session_dir)
-                vpath = os.path.join(sdir, "scan_video.avi")
+                vpath = os.path.join(sdir, "scan_video.mp4")
 
                 if self._record_frames:
                     h, w = self._record_frames[0].shape[:2]
-                    fourcc = cv2.VideoWriter_fourcc(*'MJPG')
+                    # Try H264 codec first for best quality, fall back to MJPG
+                    fourcc = cv2.VideoWriter_fourcc(*'avc1')
                     fps = max(15, len(self._record_frames) // max(1, self._scan_duration))
                     out = cv2.VideoWriter(vpath, fourcc, fps, (w, h))
+                    if not out.isOpened():
+                        fourcc = cv2.VideoWriter_fourcc(*'H264')
+                        out = cv2.VideoWriter(vpath, fourcc, fps, (w, h))
+                    if not out.isOpened():
+                        fourcc = cv2.VideoWriter_fourcc(*'X264')
+                        out = cv2.VideoWriter(vpath, fourcc, fps, (w, h))
+                    if not out.isOpened():
+                        fourcc = cv2.VideoWriter_fourcc(*'MJPG')
+                        vpath = os.path.join(sdir, "scan_video.avi")
+                        out = cv2.VideoWriter(vpath, fourcc, fps, (w, h))
 
                     for i, frame in enumerate(self._record_frames):
                         out.write(frame)
@@ -786,33 +811,33 @@ class ScannerGUI:
         self.progress_var.set(100)
         self.progress_label.config(text="100%")
         self._recording = False
-        self._set_status(f"✓ Complete! {count} images captured", "success")
-        self.scan_btn.config(text="▶  START 3D SCAN", state="normal")
+        self._set_status(f"\u2713 Complete! {count} images captured", "success")
+        self.scan_btn.config(text="\u25b6  START 3D SCAN", state="normal")
         self.stop_btn.config(state="disabled")
         self.live_tracker_btn.config(state="normal")
         self.scanning = False
         self._record_frames = []
 
         if messagebox.askyesno("Scan Complete",
-                               f"✓ {count} images captured!\n\n"
+                               f"\u2713 {count} images captured!\n\n"
                                f"Session: {sid}\n\n"
                                "Reconstruct to 3D model now?"):
             self._direct_reconstruct()
         elif messagebox.askyesno("Scan Complete",
-                                 f"✓ {count} images captured!\n\n"
+                                 f"\u2713 {count} images captured!\n\n"
                                  f"Session: {sid}\n\nOpen folder?"):
             os.startfile(sdir)
 
     def _on_scan_error(self, error):
         self._recording = False
-        self.scan_btn.config(text="▶  START 3D SCAN", state="normal")
+        self.scan_btn.config(text="\u25b6  START 3D SCAN", state="normal")
         self.stop_btn.config(state="disabled")
         self.live_tracker_btn.config(state="normal")
         self.scanning = False
         self._record_frames = []
         self.progress_var.set(0)
         self.progress_label.config(text="0%")
-        self._set_status(f"✗ Scan failed: {error}", "error")
+        self._set_status(f"\u2717 Scan failed: {error}", "error")
         messagebox.showerror("Scan Error", f"Scan failed:\n{error}")
 
     def _stop_scan(self):
@@ -847,9 +872,9 @@ class ScannerGUI:
             return
 
         output_format = self.config.get("output_format", "OBJ")
-        recon_quality = self.config.get("recon_quality", "high")
+        recon_quality = self.config.get("recon_quality", "ultra")
 
-        self._set_status(f"🚀 Reconstructing {session_id} → {output_format}...", "busy")
+        self._set_status(f"Reconstructing {session_id} \u2192 {output_format} (ultra quality)...", "busy")
         self.progress_var.set(5)
         self.root.update()
 
@@ -871,9 +896,9 @@ class ScannerGUI:
                 self.root.after(0, lambda: self.progress_label.config(text="100%"))
 
                 if result:
-                    self.root.after(0, lambda: self._set_status(f"✓ {output_format} created!", "success"))
+                    self.root.after(0, lambda: self._set_status(f"\u2713 {output_format} created!", "success"))
                     self.root.after(0, lambda: messagebox.showinfo(
-                        "🎉 Reconstruction Complete!",
+                        "Reconstruction Complete!",
                         f"3D model reconstructed successfully!\n\n"
                         f"Session: {session_id}\n"
                         f"Format: {output_format}\n\n"
@@ -883,7 +908,7 @@ class ScannerGUI:
                     raise RuntimeError("Reconstruction did not complete successfully.")
             except Exception as e:
                 error_msg = str(e)
-                self.root.after(0, lambda: self._set_status("✗ Reconstruction failed", "error"))
+                self.root.after(0, lambda: self._set_status("\u2717 Reconstruction failed", "error"))
                 self.root.after(0, lambda: messagebox.showerror(
                     "Reconstruction Failed", error_msg))
 
@@ -907,7 +932,7 @@ class ScannerGUI:
             return
 
         model_path = str(obj_files[0])
-        self._set_status(f"👁 Opening model: {obj_files[0].name}", "busy")
+        self._set_status(f"Opening model: {obj_files[0].name}", "busy")
 
         def viewer():
             try:
@@ -918,7 +943,7 @@ class ScannerGUI:
                 mesh.show()
                 self.root.after(0, lambda: self._set_status("Ready to scan", "success"))
             except Exception as e:
-                self.root.after(0, lambda: self._set_status("✗ Viewer error", "error"))
+                self.root.after(0, lambda: self._set_status("\u2717 Viewer error", "error"))
                 self.root.after(0, lambda: messagebox.showerror("Viewer Error", str(e)))
 
         threading.Thread(target=viewer, daemon=True).start()
@@ -935,19 +960,45 @@ class ScannerGUI:
     def _open_settings(self):
         dlg = Toplevel(self.root)
         dlg.title("Settings")
-        dlg.geometry("580x580")
+        dlg.geometry("580x620")
         dlg.configure(bg=self.theme["bg_primary"])
         dlg.transient(self.root)
         dlg.grab_set()
 
-        mf = Frame(dlg, bg=self.theme["bg_primary"], padx=24, pady=24)
-        mf.pack(fill="both", expand=True)
+        # ── Scrollable canvas ──────────────────────────────────────
+        canvas = Canvas(dlg, bg=self.theme["bg_primary"], highlightthickness=0)
+        scrollbar = ttk.Scrollbar(dlg, orient="vertical", command=canvas.yview)
+        scrollable_frame = Frame(canvas, bg=self.theme["bg_primary"], padx=24, pady=24)
 
-        Label(mf, text="⚙ Settings", bg=self.theme["bg_primary"],
+        scrollable_frame.bind(
+            "<Configure>",
+            lambda e: canvas.configure(scrollregion=canvas.bbox("all"))
+        )
+
+        canvas.create_window((0, 0), window=scrollable_frame, anchor="nw", width=540)
+        canvas.configure(yscrollcommand=scrollbar.set)
+
+        canvas.pack(side="left", fill="both", expand=True)
+        scrollbar.pack(side="right", fill="y")
+
+        # Mouse wheel scrolling
+        def _on_mousewheel(event):
+            canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
+        canvas.bind_all("<MouseWheel>", _on_mousewheel)
+
+        # Clean up binding on close
+        def _on_dlg_close():
+            canvas.unbind_all("<MouseWheel>")
+            dlg.destroy()
+        dlg.protocol("WM_DELETE_WINDOW", _on_dlg_close)
+
+        mf = scrollable_frame
+
+        Label(mf, text="\u2699 Settings", bg=self.theme["bg_primary"],
               fg=self.theme["text_primary"], font=("Segoe UI", 18, "bold")).pack(pady=(0, 20))
 
         # ── Camera ──
-        self._settings_section(mf, "📱 Camera")
+        self._settings_section(mf, "\U0001f4f1 Camera")
 
         cam_frame = Frame(mf, bg=self.theme["bg_tertiary"], padx=12, pady=10)
         cam_frame.pack(fill="x", pady=(0, 16))
@@ -964,20 +1015,20 @@ class ScannerGUI:
             try:
                 r = urllib.request.urlopen(url + "/", timeout=5)
                 if r.status == 200:
-                    messagebox.showinfo("Success", f"✓ IP Webcam reachable at {url}")
+                    messagebox.showinfo("Success", f"\u2713 IP Webcam reachable at {url}")
                     self._set_status("Connection successful", "success")
                 r.close()
             except Exception as e:
-                messagebox.showerror("Failed", f"✗ Cannot reach {url}\n\n{e}")
+                messagebox.showerror("Failed", f"\u2717 Cannot reach {url}\n\n{e}")
                 self._set_status("Connection test failed", "error")
 
-        Button(cam_frame, text="📡 Test Connection", command=test_connection,
+        Button(cam_frame, text="\U0001f4e1 Test Connection", command=test_connection,
                bg=self.theme["bg_secondary"], fg=self.theme["text_primary"],
                relief="flat", bd=0, font=("Segoe UI", 9), cursor="hand2",
                padx=10, pady=4).pack(pady=(0, 4))
 
         # ── Scanning ──
-        self._settings_section(mf, "⚙ Scanning")
+        self._settings_section(mf, "\u2699 Scanning")
 
         scan_frame = Frame(mf, bg=self.theme["bg_tertiary"], padx=12, pady=10)
         scan_frame.pack(fill="x", pady=(0, 16))
@@ -1003,7 +1054,7 @@ class ScannerGUI:
               relief="flat", font=("Segoe UI", 11)).pack(side="right")
 
         # ── Features ──
-        self._settings_section(mf, "🧩 Features")
+        self._settings_section(mf, "\U0001f9e9 Features")
 
         feat_frame = Frame(mf, bg=self.theme["bg_tertiary"], padx=12, pady=10)
         feat_frame.pack(fill="x", pady=(0, 16))
@@ -1027,7 +1078,7 @@ class ScannerGUI:
               relief="flat", font=("Segoe UI", 11)).pack(side="right")
 
         # ── Reconstruction ──
-        self._settings_section(mf, "☁ Reconstruction")
+        self._settings_section(mf, "\u2601 Reconstruction")
 
         recon_frame = Frame(mf, bg=self.theme["bg_tertiary"], padx=12, pady=10)
         recon_frame.pack(fill="x", pady=(0, 16))
@@ -1042,7 +1093,7 @@ class ScannerGUI:
 
         Label(recon_frame, text="Quality:", bg=self.theme["bg_tertiary"],
               fg=self.theme["text_secondary"], font=("Segoe UI", 10)).pack(anchor="w")
-        qual_var = StringVar(value=self.config.get("recon_quality", "high"))
+        qual_var = StringVar(value=self.config.get("recon_quality", "ultra"))
         qual_menu = OptionMenu(recon_frame, qual_var, "draft", "medium", "high", "ultra")
         qual_menu.config(bg=self.theme["bg_secondary"], fg=self.theme["text_primary"],
                          relief="flat", font=("Segoe UI", 11))
@@ -1081,11 +1132,11 @@ class ScannerGUI:
             self._set_status("Settings saved", "success")
             dlg.destroy()
 
-        Button(btn_frame, text="💾 Save Settings", command=save,
+        Button(btn_frame, text="\U0001f4be Save Settings", command=save,
                bg=self.theme["accent_primary"], fg="white",
                relief="flat", bd=0, font=("Segoe UI", 11, "bold"),
                cursor="hand2", padx=16, pady=10).pack(fill="x", pady=(0, 8))
-        Button(btn_frame, text="Cancel", command=dlg.destroy,
+        Button(btn_frame, text="Cancel", command=_on_dlg_close,
                bg=self.theme["bg_tertiary"], fg=self.theme["text_primary"],
                relief="flat", bd=0, font=("Segoe UI", 10),
                cursor="hand2", padx=10, pady=6).pack()
@@ -1113,7 +1164,7 @@ class ScannerGUI:
             self.camera_stream.release()
             self.camera_stream = None
         self.camera_open = False
-        self.cam_status.config(text="● Offline", fg=self.theme["accent_danger"])
+        self.cam_status.config(text="\u25cf Offline", fg=self.theme["accent_danger"])
 
     # ─── Helpers ─────────────────────────────────────────────────────────
     def _show_placeholder(self, text):

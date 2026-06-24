@@ -1,16 +1,17 @@
 {
   "webcam_url": "http://192.0.0.4:8080",
-  "kiri_api_key": "kiri_fY_P0PneyULXY8u0TDrf-Lf6o5iy0-1DgkK9Ad430rs",
+  "kiri_api_key": "kiri_6ehOvZRTDonIKaEltkltR0xbae2dCmXKPauyG9P3zYA",
   "num_angles": 70,
-  "recording_duration": 30,
+  "recording_duration": 150,
   "theme": "dark",
   "bg_removal": false,
   "output_format": "STL",
-  "recon_quality": "high",
+  "recon_quality": "ultra",
   "marker_size_cm": 5.0,
   "aruco_enabled": true,
+  "video_quality": 100,
   "resolution": "1280x720",
   "scanning_grid": true,
   "aruco_tracking": false,
-  "last_session": "20260621_210753"
+  "last_session": "20260624_121809"
 }

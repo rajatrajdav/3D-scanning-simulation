@@ -567,7 +567,9 @@ def reconstruct(session_id: str = None, output_name: str = None,
 
     quality_map = {"draft": "3", "medium": "2", "high": "1", "ultra": "1"}
     model_quality = quality_map.get(quality, "1")
-    texture_quality = model_quality
+    texture_quality = "1" if quality in ("high", "ultra") else model_quality
+    # Ultra quality: enable texture smoothing for best results
+    texture_smoothing = "1"
 
     recon = KiriReconstructor()
     if progress_callback:
