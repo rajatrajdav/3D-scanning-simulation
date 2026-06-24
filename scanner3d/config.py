@@ -47,4 +47,4 @@ MODEL_OUTPUT_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "mod
 
 # ─── KIRI ENGINE API ──────────────────────────────────────────────────────
 KIRI_BASE_URL = "https://api.kiriengine.app/api/"
-KIRI_API_KEY = "kiri_fY_P0PneyULXY8u0TDrf-Lf6o5iy0-1DgkK9Ad430rs"
+KIRI_API_KEY = "kiri_6ehOvZRTDonIKaEltkltR0xbae2dCmXKPauyG9P3zYA"

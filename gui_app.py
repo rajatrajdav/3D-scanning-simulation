@@ -133,6 +133,7 @@ class CameraStream:
         self.source_name = "Disconnected"
         self._resolution = ""
         self._lock = threading.Lock()
+        self._fps = 0.0
 
     def open(self) -> bool:
         print(f"[Camera] Connecting: {self.source}")
@@ -150,6 +151,10 @@ class CameraStream:
                 if ret and frame is not None:
                     h, w = frame.shape[:2]
                     self._resolution = f"{w}x{h}"
+                    # Estimate FPS from the camera stream
+                    self._fps = self.cap.get(cv2.CAP_PROP_FPS)
+                    if self._fps <= 0:
+                        self._fps = 30.0  # Default fallback
                     if self.source and self.source.startswith("http"):
                         self.source_name = f"IP Webcam ({self._resolution})"
                     else:
@@ -196,7 +201,13 @@ class CameraStream:
                 else:
                     ret, frame = False, None
             if ret and frame is not None:
-                # Keep full resolution frame for recording quality
+                # Ensure resolution is within 1920x1080 for Kiri Engine compatibility
+                h, w = frame.shape[:2]
+                if w > 1920 or h > 1080:
+                    scale = min(1920 / w, 1080 / h)
+                    new_w = int(w * scale)
+                    new_h = int(h * scale)
+                    frame = cv2.resize(frame, (new_w, new_h), interpolation=cv2.INTER_LINEAR)
                 if self.frame_queue.full():
                     try:
                         self.frame_queue.get_nowait()
@@ -212,6 +223,10 @@ class CameraStream:
     @property
     def resolution(self):
         return self._resolution
+
+    @property
+    def fps(self):
+        return self._fps
 
 
 # ─── Professional GUI ────────────────────────────────────────────────────────
@@ -230,12 +245,9 @@ class ScannerGUI:
         self._recording = False
         self._record_start = 0.0
         self._record_frames: List[np.ndarray] = []
-        self._session_dir: Optional[str] = None
+        self._session_dir: Optional[Path] = None
         self._scan_duration = 30
-        self._capture_mask: Optional[np.ndarray] = None
-        self._capture_percentage = 0.0
-        self._prev_features: Optional[np.ndarray] = None
-        self._scan_complete_threshold = 85.0
+        self._video_writer: Optional[cv2.VideoWriter] = None
 
         # Modules
         self.bg_remover = BackgroundRemover(enable=self.config.get("bg_removal", False))
@@ -575,35 +587,21 @@ class ScannerGUI:
 
         frame = self.camera_stream.read()
         if frame is not None:
-            # Record frames during scan
-            if self._recording:
-                self._record_frames.append(frame.copy())
+            # Write frame directly to video file during recording
+            if self._recording and self._video_writer is not None:
+                try:
+                    self._video_writer.write(frame)
+                except Exception as e:
+                    print(f"[Record] Write error: {e}")
 
             # Apply background removal if enabled
             if self.bg_remover.enabled:
                 processed = self.bg_remover.process(frame)
-                mask = self.bg_remover.get_mask()
             else:
                 processed = frame.copy()
-                mask = None
-
-            # Update capture tracking (for auto-stop)
-            if self._recording:
-                self._update_capture_tracking(frame)
 
             # Apply ArUco dimension tracking
             processed = self.aruco_tracker.process(processed)
-
-            # GREEN CAPTURE OVERLAY - Show scanned areas in green
-            if self._recording and self._capture_mask is not None:
-                try:
-                    mask_uint8 = (self._capture_mask * 255).astype(np.uint8)
-                    green_overlay = np.zeros_like(processed)
-                    green_overlay[:, :] = (0, 255, 0)
-                    green_overlay = cv2.bitwise_and(green_overlay, green_overlay, mask=mask_uint8)
-                    cv2.addWeighted(processed, 0.7, green_overlay, 0.3, 0, processed)
-                except Exception:
-                    pass
 
             # Update dimension display
             dims = self.aruco_tracker.get_dimensions()
@@ -670,61 +668,75 @@ class ScannerGUI:
             return
 
         self.scanning = True
-        self._recording = True
         self._record_start = time.time()
-        self._record_frames = []
-        self._capture_mask = None
-        self._capture_percentage = 0.0
-        self._prev_features = None
         self.scan_btn.config(text="⏳ Scanning...", state="disabled")
         self.stop_btn.config(state="normal")
         self.live_tracker_btn.config(state="disabled")
         self._set_status("SCANNING \u2014 rotate the object 360\u00b0", "busy")
 
-        # Create session
+        # Create session directory
         sid = time.strftime("%Y%m%d_%H%M%S")
         self._session_dir = Path(OUTPUT_DIR) / sid
         self._session_dir.mkdir(parents=True, exist_ok=True)
         self.config["last_session"] = sid
         save_config(self.config)
 
+        # Get scan duration from UI
         try:
             self._scan_duration = int(self.dur_var.get())
         except ValueError:
             self._scan_duration = 30
 
+        # Get the frame dimensions from the camera stream
+        # We need a frame to get dimensions - read one from the stream
+        h, w = 720, 1280  # Default fallback
+        test_frame = self.camera_stream.read()
+        if test_frame is not None:
+            h, w = test_frame.shape[:2]
+        else:
+            # Try to get from resolution string
+            res_str = self.camera_stream.resolution
+            if res_str and "x" in res_str:
+                parts = res_str.split("x")
+                try:
+                    w, h = int(parts[0]), int(parts[1])
+                except ValueError:
+                    pass
+
+        # Ensure resolution does not exceed 1920x1080 (Kiri Engine limit)
+        if w > 1920 or h > 1080:
+            scale = min(1920 / w, 1080 / h)
+            w = int(w * scale)
+            h = int(h * scale)
+
+        vpath = os.path.join(str(self._session_dir), "scan_video.mp4")
+
+        # Use H.264 codec with high quality for Kiri Engine photogrammetry
+        fourcc = cv2.VideoWriter_fourcc(*'avc1')
+        # Cap at 30 FPS for consistent quality - Kiri Engine works best with stable framerate
+        record_fps = min(30.0, max(15.0, float(self.camera_stream.fps)))
+
+        self._video_writer = cv2.VideoWriter(vpath, fourcc, record_fps, (w, h))
+        if not self._video_writer.isOpened():
+            fourcc = cv2.VideoWriter_fourcc(*'H264')
+            self._video_writer = cv2.VideoWriter(vpath, fourcc, record_fps, (w, h))
+        if not self._video_writer.isOpened():
+            fourcc = cv2.VideoWriter_fourcc(*'X264')
+            self._video_writer = cv2.VideoWriter(vpath, fourcc, record_fps, (w, h))
+        if not self._video_writer.isOpened():
+            # Fall back to MJPG/AVI if H264 codecs are unavailable
+            fourcc = cv2.VideoWriter_fourcc(*'MJPG')
+            vpath = os.path.join(str(self._session_dir), "scan_video.avi")
+            self._video_writer = cv2.VideoWriter(vpath, fourcc, record_fps, (w, h))
+
+        if not self._video_writer.isOpened():
+            self._on_scan_error("Could not create video writer. Codec not available.")
+            return
+
+        print(f"[Record] Started: {vpath} | Resolution: {w}x{h} | FPS: {record_fps} | Duration: {self._scan_duration}s")
+
+        self._recording = True
         self._update_recording_status()
-
-    def _update_capture_tracking(self, frame):
-        """Update capture mask to track which areas have been scanned (visual overlay only)."""
-        try:
-            if frame is None:
-                return
-            h, w = frame.shape[:2]
-            if self._capture_mask is None or self._capture_mask.shape[:2] != (h, w):
-                self._capture_mask = np.zeros((h, w), dtype=np.float32)
-
-            if not hasattr(self, '_frame_counter'):
-                self._frame_counter = 0
-            self._frame_counter += 1
-            if self._frame_counter % 2 != 0:
-                return
-
-            gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-            features = cv2.goodFeaturesToTrack(gray, maxCorners=100, qualityLevel=0.01, minDistance=20)
-
-            if features is not None:
-                features = np.int0(features)
-                for feature in features:
-                    x, y = feature.ravel()
-                    cv2.circle(self._capture_mask, (x, y), 25, 1.0, -1)
-                self._capture_mask *= 0.998
-                captured_pixels = np.sum(self._capture_mask > 0.1)
-                total_pixels = h * w
-                self._capture_percentage = min(100.0, (captured_pixels / total_pixels) * 100.0 * 4.0)
-                # NOTE: Recording duration is now controlled ONLY by the timer in _update_recording_status
-        except Exception as e:
-            print(f"[CaptureTracking] Error: {e}")
 
     def _update_recording_status(self):
         if not self._recording:
@@ -732,11 +744,11 @@ class ScannerGUI:
         elapsed = time.time() - self._record_start
         remaining = max(0, self._scan_duration - elapsed)
 
-        # Use elapsed time for progress, not smart tracking
+        # Use elapsed time for progress
         progress_pct = int((elapsed / self._scan_duration) * 100) if self._scan_duration > 0 else 0
         self.progress_var.set(progress_pct)
         self.progress_label.config(text=f"{progress_pct}% ({remaining:.0f}s left)")
-        self._set_status(f"🎥 Recording {elapsed:.0f}s / {self._scan_duration}s \u2014 {len(self._record_frames)} frames", "busy")
+        self._set_status(f"🎥 Recording {elapsed:.0f}s / {self._scan_duration}s", "busy")
 
         if elapsed >= self._scan_duration:
             self._finish_recording()
@@ -747,61 +759,57 @@ class ScannerGUI:
         if not self._recording:
             return
         self._recording = False
-        self._set_status("Saving video...", "busy")
+
+        # Close the video writer
+        if self._video_writer is not None:
+            self._video_writer.release()
+            self._video_writer = None
+
+        self._set_status("Video saved. Extracting frames...", "busy")
         self.root.update()
 
         def worker():
             try:
                 sdir = str(self._session_dir)
+
+                # Find the saved video file
                 vpath = os.path.join(sdir, "scan_video.mp4")
+                if not os.path.exists(vpath):
+                    vpath = os.path.join(sdir, "scan_video.avi")
 
-                if self._record_frames:
-                    h, w = self._record_frames[0].shape[:2]
-                    # Try H264 codec first for best quality, fall back to MJPG
-                    fourcc = cv2.VideoWriter_fourcc(*'avc1')
-                    fps = max(15, len(self._record_frames) // max(1, self._scan_duration))
-                    out = cv2.VideoWriter(vpath, fourcc, fps, (w, h))
-                    if not out.isOpened():
-                        fourcc = cv2.VideoWriter_fourcc(*'H264')
-                        out = cv2.VideoWriter(vpath, fourcc, fps, (w, h))
-                    if not out.isOpened():
-                        fourcc = cv2.VideoWriter_fourcc(*'X264')
-                        out = cv2.VideoWriter(vpath, fourcc, fps, (w, h))
-                    if not out.isOpened():
-                        fourcc = cv2.VideoWriter_fourcc(*'MJPG')
-                        vpath = os.path.join(sdir, "scan_video.avi")
-                        out = cv2.VideoWriter(vpath, fourcc, fps, (w, h))
+                if not os.path.exists(vpath):
+                    raise RuntimeError("Video file was not saved")
 
-                    for i, frame in enumerate(self._record_frames):
-                        out.write(frame)
-                        if i % 30 == 0:
-                            pct = int((i / len(self._record_frames)) * 30) + 30
-                            self.root.after(0, lambda p=pct: self.progress_var.set(p))
-                    out.release()
-                    self.root.after(0, lambda: self.progress_var.set(40))
+                # Verify the video was written properly
+                cap_check = cv2.VideoCapture(vpath)
+                total_frames = int(cap_check.get(cv2.CAP_PROP_FRAME_COUNT))
+                cap_check.release()
 
-                    # Extract frames using Camera method
-                    self.root.after(0, lambda: self._set_status("Extracting frames...", "busy"))
-                    try:
-                        num_angles = int(self.angles_var.get())
-                    except ValueError:
-                        num_angles = 70
+                if total_frames == 0:
+                    raise RuntimeError("Video file is empty - no frames were captured")
 
-                    from scanner3d.camera import Camera
-                    temp_cam = Camera()
-                    extracted = temp_cam.extract_frames_from_video(
-                        vpath, num_frames=num_angles, output_dir=sdir
-                    )
+                self.root.after(0, lambda: self.progress_var.set(40))
 
-                    self.root.after(0, lambda: self.progress_var.set(80))
+                # Extract frames using Camera method
+                self.root.after(0, lambda: self._set_status("Extracting frames...", "busy"))
+                try:
+                    num_angles = int(self.angles_var.get())
+                except ValueError:
+                    num_angles = 70
 
-                    if extracted:
-                        self.root.after(0, lambda: self._on_scan_done(
-                            len(extracted), self._session_dir.name, sdir))
-                    else:
-                        raise RuntimeError("No frames extracted")
+                from scanner3d.camera import Camera
+                temp_cam = Camera()
+                extracted = temp_cam.extract_frames_from_video(
+                    vpath, num_frames=num_angles, output_dir=sdir
+                )
+
+                self.root.after(0, lambda: self.progress_var.set(80))
+
+                if extracted:
+                    self.root.after(0, lambda: self._on_scan_done(
+                        len(extracted), self._session_dir.name, sdir))
                 else:
-                    raise RuntimeError("No frames recorded")
+                    raise RuntimeError("No frames extracted from video")
             except Exception as e:
                 self.root.after(0, lambda err=e: self._on_scan_error(err))
 
@@ -816,7 +824,6 @@ class ScannerGUI:
         self.stop_btn.config(state="disabled")
         self.live_tracker_btn.config(state="normal")
         self.scanning = False
-        self._record_frames = []
 
         if messagebox.askyesno("Scan Complete",
                                f"\u2713 {count} images captured!\n\n"
@@ -830,11 +837,13 @@ class ScannerGUI:
 
     def _on_scan_error(self, error):
         self._recording = False
+        if self._video_writer is not None:
+            self._video_writer.release()
+            self._video_writer = None
         self.scan_btn.config(text="\u25b6  START 3D SCAN", state="normal")
         self.stop_btn.config(state="disabled")
         self.live_tracker_btn.config(state="normal")
         self.scanning = False
-        self._record_frames = []
         self.progress_var.set(0)
         self.progress_label.config(text="0%")
         self._set_status(f"\u2717 Scan failed: {error}", "error")
@@ -884,6 +893,8 @@ class ScannerGUI:
                     self.root.after(0, lambda: self.progress_var.set(p))
                     self.root.after(0, lambda: self.progress_label.config(text=f"{p}%"))
 
+                # Use API key from settings (gui_config.json), fall back to config.py default
+                api_key = self.config.get("kiri_api_key", "")
                 result = run_reconstruction(
                     session_id=session_id,
                     output_name=None,
@@ -891,6 +902,7 @@ class ScannerGUI:
                     file_format=output_format,
                     auto_view=True,
                     progress_callback=progress_cb,
+                    api_key=api_key,
                 )
                 self.root.after(0, lambda: self.progress_var.set(100))
                 self.root.after(0, lambda: self.progress_label.config(text="100%"))
@@ -1129,6 +1141,7 @@ class ScannerGUI:
 
             save_config(self.config)
             self.server_label.config(text=f"Server: {self.config['webcam_url']}")
+            self.dur_var.set(str(self.config["recording_duration"]))
             self._set_status("Settings saved", "success")
             dlg.destroy()
 
@@ -1188,6 +1201,12 @@ class ScannerGUI:
         if self.scanning:
             if not messagebox.askokcancel("Exit", "Scan in progress. Exit?"):
                 return
+        # Make sure recording is stopped
+        if self._recording:
+            self._recording = False
+        if self._video_writer is not None:
+            self._video_writer.release()
+            self._video_writer = None
         self.bg_remover.release()
         self._close_camera()
         self.root.destroy()

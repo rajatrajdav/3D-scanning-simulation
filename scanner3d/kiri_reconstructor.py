@@ -536,7 +536,8 @@ def reconstruct(session_id: str = None, output_name: str = None,
                  quality: str = "high",
                  file_format: str = "OBJ",
                  auto_view: bool = True,
-                 progress_callback=None):
+                 progress_callback=None,
+                 api_key: str = None):
     """
     Run the full Kiri Engine pipeline on a captured session's video.
 
@@ -548,6 +549,7 @@ def reconstruct(session_id: str = None, output_name: str = None,
         file_format: Output format ("OBJ", "STL", "GLB", "FBX", "PLY")
         auto_view: Whether to open the trimesh viewer once done.
         progress_callback: Optional callback function(progress_percent) for UI updates
+        api_key: Kiri Engine API key. If None, uses KIRI_API_KEY from config.py.
     """
     if session_id:
         session_dir = Path(OUTPUT_DIR) / session_id
@@ -571,7 +573,7 @@ def reconstruct(session_id: str = None, output_name: str = None,
     # Ultra quality: enable texture smoothing for best results
     texture_smoothing = "1"
 
-    recon = KiriReconstructor()
+    recon = KiriReconstructor(api_key=api_key)
     if progress_callback:
         progress_callback(10)
 
