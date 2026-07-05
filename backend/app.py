@@ -365,6 +365,65 @@ def remove_background_cpu(frame: np.ndarray) -> Optional[np.ndarray]:
         return None
 
 
+# ─── Routes ──────────────────────────────────────────────────────────────────
+@app.route("/")
+def index():
+    """Landing page with API documentation."""
+    return """
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>3D Scanner API</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+               background: #0f1419; color: #f1f5f9; min-height: 100vh; display: flex;
+               align-items: center; justify-content: center; }
+        .card { background: #1a1f26; border-radius: 16px; padding: 48px; max-width: 600px;
+                width: 90%; border: 1px solid #334155; }
+        h1 { font-size: 28px; margin-bottom: 8px; }
+        .badge { display: inline-block; background: #00b4d8; color: #fff; font-size: 12px;
+                 padding: 4px 12px; border-radius: 20px; margin-bottom: 24px; }
+        p { color: #94a3b8; line-height: 1.6; margin-bottom: 24px; }
+        .endpoints { list-style: none; }
+        .endpoints li { background: #242b33; border-radius: 8px; padding: 12px 16px;
+                        margin-bottom: 8px; font-family: monospace; font-size: 14px; }
+        .endpoints .method { color: #10b981; font-weight: bold; margin-right: 8px; }
+        .endpoints .desc { color: #64748b; font-size: 12px; margin-top: 4px; }
+        .status { margin-top: 24px; padding: 12px; background: #242b33; border-radius: 8px;
+                  text-align: center; color: #10b981; font-size: 14px; }
+    </style>
+</head>
+<body>
+    <div class="card">
+        <h1>🎯 3D Scanner API</h1>
+        <div class="badge">Backend Server</div>
+        <p>Flask backend for the 3D scanning simulation project. Handles IP Webcam stream ingestion, frame processing, background removal, and ArUco marker detection.</p>
+        <ul class="endpoints">
+            <li><span class="method">GET</span> / <span class="desc">→ This page (API documentation)</span></li>
+            <li><span class="method">GET</span> /api/status <span class="desc">→ Server health & configuration</span></li>
+        </ul>
+        <div class="status">✅ Server is running</div>
+    </div>
+</body>
+</html>
+"""
+
+@app.route("/api/status")
+def api_status():
+    """Return server status as JSON."""
+    return jsonify({
+        "status": "ok",
+        "app": "3D Scanner Backend",
+        "version": "1.0.0",
+        "endpoints": {
+            "/": "API documentation (HTML)",
+            "/api/status": "Server status (JSON)",
+        }
+    })
+
 # ─── ArUco Marker Detection ──────────────────────────────────────────────────
 def detect_aruco_markers(
     frame: np.ndarray,
@@ -437,3 +496,10 @@ def detect_aruco_markers(
                 dimensions["depth"] = dimensions["width"] * 0.3  # Estimated depth
 
                 # Draw bounding box around the frame area
+
+# ─── Main ────────────────────────────────────────────────────────────────────
+if __name__ == "__main__":
+    port = int(os.environ.get("PORT", 5000))
+    debug = os.environ.get("FLASK_DEBUG", "0") == "1"
+    print(f"3D Scanner Backend starting on port {port}...")
+    app.run(host="0.0.0.0", port=port, debug=debug)
