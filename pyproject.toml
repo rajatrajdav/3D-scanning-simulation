@@ -1,20 +1,13 @@
 [project]
 name = "3d-scanning-simulation"
 version = "1.0.0"
-description = "3D Scanner - Capture images of an object from multiple angles and reconstruct to 3D model"
+description = "3D Scanner - Flask Backend for Vercel"
 requires-python = ">=3.9"
 dependencies = [
-    "opencv-python>=4.8.0",
-    "opencv-contrib-python>=4.8.0",
-    "numpy>=1.24.0",
-    "requests>=2.31.0",
-    "scipy>=1.10.0",
-    "trimesh>=4.0.0",
-    "pywavefront>=1.3.3",
-    "Pillow>=10.0.0",
-    "pyglet==1.5.31",
     "flask>=3.0.0",
     "flask-cors>=4.0.0",
+    "opencv-python-headless>=4.8.0",
+    "numpy>=1.24.0",
 ]
 
 [tool.vercel]
