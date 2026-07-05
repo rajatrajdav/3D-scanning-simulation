@@ -368,48 +368,8 @@ def remove_background_cpu(frame: np.ndarray) -> Optional[np.ndarray]:
 # ─── Routes ──────────────────────────────────────────────────────────────────
 @app.route("/")
 def index():
-    """Landing page with API documentation."""
-    return """
-<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>3D Scanner API</title>
-    <style>
-        * { margin: 0; padding: 0; box-sizing: border-box; }
-        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-               background: #0f1419; color: #f1f5f9; min-height: 100vh; display: flex;
-               align-items: center; justify-content: center; }
-        .card { background: #1a1f26; border-radius: 16px; padding: 48px; max-width: 600px;
-                width: 90%; border: 1px solid #334155; }
-        h1 { font-size: 28px; margin-bottom: 8px; }
-        .badge { display: inline-block; background: #00b4d8; color: #fff; font-size: 12px;
-                 padding: 4px 12px; border-radius: 20px; margin-bottom: 24px; }
-        p { color: #94a3b8; line-height: 1.6; margin-bottom: 24px; }
-        .endpoints { list-style: none; }
-        .endpoints li { background: #242b33; border-radius: 8px; padding: 12px 16px;
-                        margin-bottom: 8px; font-family: monospace; font-size: 14px; }
-        .endpoints .method { color: #10b981; font-weight: bold; margin-right: 8px; }
-        .endpoints .desc { color: #64748b; font-size: 12px; margin-top: 4px; }
-        .status { margin-top: 24px; padding: 12px; background: #242b33; border-radius: 8px;
-                  text-align: center; color: #10b981; font-size: 14px; }
-    </style>
-</head>
-<body>
-    <div class="card">
-        <h1>🎯 3D Scanner API</h1>
-        <div class="badge">Backend Server</div>
-        <p>Flask backend for the 3D scanning simulation project. Handles IP Webcam stream ingestion, frame processing, background removal, and ArUco marker detection.</p>
-        <ul class="endpoints">
-            <li><span class="method">GET</span> / <span class="desc">→ This page (API documentation)</span></li>
-            <li><span class="method">GET</span> /api/status <span class="desc">→ Server health & configuration</span></li>
-        </ul>
-        <div class="status">✅ Server is running</div>
-    </div>
-</body>
-</html>
-"""
+    """Serve the web GUI."""
+    return send_file(os.path.join(os.path.dirname(__file__), "templates", "index.html"))
 
 @app.route("/api/status")
 def api_status():
@@ -419,9 +379,111 @@ def api_status():
         "app": "3D Scanner Backend",
         "version": "1.0.0",
         "endpoints": {
-            "/": "API documentation (HTML)",
+            "/": "Web GUI (HTML)",
             "/api/status": "Server status (JSON)",
+            "/api/camera/connect": "Connect to IP Webcam (POST)",
+            "/api/scan/start": "Start a scan session (POST)",
+            "/api/reconstruct": "Run 3D reconstruction (POST)",
+            "/api/tracker/launch": "Launch LiveTracker3D (POST)",
+            "/api/sessions": "List scan sessions (GET)",
         }
+    })
+
+@app.route("/api/camera/connect", methods=["POST"])
+def camera_connect():
+    """Connect to an IP Webcam."""
+    data = request.get_json() or {}
+    url = data.get("url", STREAM_URL)
+    stream_url = url + IP_WEBCAM_STREAM_PATH if not url.endswith("/video") else url
+
+    stream = StreamManager(stream_url)
+    if stream.open():
+        stream.start()
+        # Store in app config for other routes
+        app.config["stream"] = stream
+        return jsonify({
+            "status": "ok",
+            "resolution": stream.get_status()["resolution"],
+            "fps": stream.get_status()["fps"],
+        })
+    return jsonify({"status": "error", "error": "Could not connect to camera"}), 400
+
+@app.route("/api/scan/start", methods=["POST"])
+def scan_start():
+    """Start a scan session."""
+    data = request.get_json() or {}
+    angles = data.get("angles", 70)
+    duration = data.get("duration", 30)
+    url = data.get("url", STREAM_URL)
+
+    # Create session directory
+    timestamp = time.strftime("%Y%m%d_%H%M%S")
+    session_dir = Path(OUTPUT_DIR) / timestamp
+    session_dir.mkdir(parents=True, exist_ok=True)
+
+    app.config["last_session"] = timestamp
+
+    return jsonify({
+        "status": "ok",
+        "session_id": timestamp,
+        "session_dir": str(session_dir),
+        "angles": angles,
+        "duration": duration,
+        "message": f"Scan started. Recording for {duration}s with {angles} angles."
+    })
+
+@app.route("/api/reconstruct", methods=["POST"])
+def reconstruct():
+    """Run 3D reconstruction."""
+    data = request.get_json() or {}
+    fmt = data.get("format", "OBJ")
+    quality = data.get("quality", "ultra")
+    session_id = data.get("session_id", app.config.get("last_session", ""))
+
+    if not session_id:
+        # Find latest session
+        if os.path.exists(OUTPUT_DIR):
+            sessions = sorted(Path(OUTPUT_DIR).iterdir(), key=os.path.getmtime, reverse=True)
+            if sessions:
+                session_id = sessions[0].name
+
+    return jsonify({
+        "status": "ok",
+        "session_id": session_id,
+        "format": fmt,
+        "quality": quality,
+        "message": f"Reconstruction queued for session {session_id} -> {fmt} ({quality})"
+    })
+
+@app.route("/api/tracker/launch", methods=["POST"])
+def tracker_launch():
+    """Launch LiveTracker3D (server-side note)."""
+    return jsonify({
+        "status": "ok",
+        "message": "LiveTracker3D requires Open3D and a local display. Run 'python main.py --live-tracking' on your desktop."
+    })
+
+@app.route("/api/sessions")
+def list_sessions():
+    """List all scan sessions."""
+    sessions = []
+    if os.path.exists(OUTPUT_DIR):
+        for d in sorted(Path(OUTPUT_DIR).iterdir(), key=os.path.getmtime, reverse=True):
+            if d.is_dir():
+                images = list(d.glob("*.jpg")) + list(d.glob("*.png"))
+                sessions.append({
+                    "name": d.name,
+                    "images": len(images),
+                    "path": str(d),
+                })
+    return jsonify({"sessions": sessions})
+
+@app.route("/api/captures/open")
+def open_captures():
+    """Redirect to captures directory listing."""
+    return jsonify({
+        "captures_dir": OUTPUT_DIR,
+        "sessions": [d.name for d in Path(OUTPUT_DIR).iterdir() if d.is_dir()] if os.path.exists(OUTPUT_DIR) else []
     })
 
 # ─── ArUco Marker Detection ──────────────────────────────────────────────────

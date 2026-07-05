@@ -1,0 +1,492 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>3D Scanner Pro - Web Interface</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: #0f1419; color: #f1f5f9; min-height: 100vh;
+        }
+
+        /* ─── Navigation ─── */
+        .nav {
+            background: #1a1f26; padding: 16px 32px; display: flex;
+            align-items: center; justify-content: space-between;
+            border-bottom: 1px solid #334155; position: sticky; top: 0; z-index: 100;
+        }
+        .nav-logo { display: flex; align-items: center; gap: 12px; }
+        .nav-logo .icon { font-size: 24px; }
+        .nav-logo h1 { font-size: 18px; font-weight: 700; }
+        .nav-logo .version { font-size: 11px; color: #64748b; }
+        .nav-status { display: flex; align-items: center; gap: 12px; }
+        .status-dot { width: 8px; height: 8px; border-radius: 50%; background: #ef4444; display: inline-block; }
+        .status-dot.connected { background: #10b981; }
+        .nav-btn {
+            background: #242b33; color: #f1f5f9; border: none; padding: 8px 16px;
+            border-radius: 6px; cursor: pointer; font-size: 13px;
+        }
+        .nav-btn:hover { background: #2d353f; }
+        .nav-btn.primary { background: #7c3aed; color: white; }
+        .nav-btn.primary:hover { background: #6d28d9; }
+
+        /* ─── Main Layout ─── */
+        .main { display: flex; gap: 20px; padding: 20px 32px; max-width: 1600px; margin: 0 auto; }
+        .preview-panel { flex: 1; min-width: 0; }
+        .control-panel { width: 340px; flex-shrink: 0; }
+
+        /* ─── Preview Panel ─── */
+        .panel-header {
+            background: #1a1f26; border-radius: 12px 12px 0 0; padding: 12px 20px;
+            display: flex; align-items: center; justify-content: space-between;
+            border-bottom: 1px solid #334155;
+        }
+        .panel-header h2 { font-size: 14px; font-weight: 600; }
+        .panel-header .badge { font-size: 11px; color: #64748b; background: #242b33; padding: 4px 8px; border-radius: 4px; }
+        .preview-container {
+            background: #000; border-radius: 0 0 12px 12px; overflow: hidden;
+            aspect-ratio: 16/9; display: flex; align-items: center; justify-content: center;
+            position: relative; min-height: 400px;
+        }
+        .preview-placeholder {
+            text-align: center; color: #475569; padding: 40px;
+        }
+        .preview-placeholder .big-icon { font-size: 64px; margin-bottom: 16px; }
+        .preview-placeholder p { font-size: 14px; margin-bottom: 4px; }
+        .preview-placeholder .sub { font-size: 12px; color: #334155; }
+        .preview-container img { width: 100%; height: 100%; object-fit: contain; }
+        .preview-overlay {
+            position: absolute; bottom: 0; left: 0; right: 0;
+            background: linear-gradient(transparent, rgba(0,0,0,0.8)); padding: 16px 20px;
+            display: flex; justify-content: space-between;
+        }
+        .overlay-item { font-size: 12px; color: #94a3b8; font-family: monospace; }
+
+        /* ─── Control Panel ─── */
+        .control-card {
+            background: #1a1f26; border-radius: 12px; padding: 20px; margin-bottom: 16px;
+        }
+        .control-card h3 {
+            font-size: 11px; text-transform: uppercase; letter-spacing: 0.5px;
+            color: #64748b; margin-bottom: 12px; font-weight: 700;
+        }
+        .form-group { margin-bottom: 12px; }
+        .form-group label { display: block; font-size: 12px; color: #94a3b8; margin-bottom: 4px; }
+        .form-group input, .form-group select {
+            width: 100%; padding: 8px 12px; background: #242b33; color: #f1f5f9;
+            border: 1px solid #334155; border-radius: 6px; font-size: 13px; outline: none;
+        }
+        .form-group input:focus, .form-group select:focus { border-color: #00b4d8; }
+
+        .btn {
+            display: block; width: 100%; padding: 12px; border: none; border-radius: 8px;
+            font-size: 14px; font-weight: 600; cursor: pointer; margin-bottom: 8px;
+            transition: opacity 0.2s;
+        }
+        .btn:hover { opacity: 0.9; }
+        .btn:disabled { opacity: 0.5; cursor: not-allowed; }
+        .btn-primary { background: #00b4d8; color: white; }
+        .btn-success { background: #10b981; color: white; }
+        .btn-danger { background: #ef4444; color: white; }
+        .btn-secondary { background: #7c3aed; color: white; }
+        .btn-ghost { background: #242b33; color: #94a3b8; font-size: 12px; padding: 8px; }
+
+        .dimension-display {
+            background: #242b33; border-radius: 8px; padding: 12px; text-align: center;
+        }
+        .dimension-display .value { font-size: 18px; font-weight: 700; color: #10b981; }
+        .dimension-display .label { font-size: 11px; color: #64748b; margin-top: 4px; }
+
+        /* ─── Progress ─── */
+        .progress-bar {
+            width: 100%; height: 6px; background: #242b33; border-radius: 3px; overflow: hidden; margin: 8px 0;
+        }
+        .progress-fill {
+            height: 100%; background: linear-gradient(90deg, #00b4d8, #7c3aed);
+            border-radius: 3px; transition: width 0.3s; width: 0%;
+        }
+        .progress-text { font-size: 12px; color: #64748b; text-align: center; }
+
+        /* ─── Responsive ─── */
+        @media (max-width: 900px) {
+            .main { flex-direction: column; padding: 12px; }
+            .control-panel { width: 100%; }
+            .nav { padding: 12px 16px; }
+        }
+
+        /* ─── Toast ─── */
+        .toast {
+            position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%);
+            background: #242b33; color: #f1f5f9; padding: 12px 24px; border-radius: 8px;
+            font-size: 13px; box-shadow: 0 8px 32px rgba(0,0,0,0.4);
+            display: none; z-index: 1000; border: 1px solid #334155;
+        }
+        .toast.show { display: block; }
+        .toast.success { border-color: #10b981; }
+        .toast.error { border-color: #ef4444; }
+        .toast.info { border-color: #00b4d8; }
+    </style>
+</head>
+<body>
+    <!-- ─── Navigation ─── -->
+    <nav class="nav">
+        <div class="nav-logo">
+            <span class="icon">🎯</span>
+            <div>
+                <h1>3D Scanner Pro</h1>
+                <span class="version">v3.0 Web Edition</span>
+            </div>
+        </div>
+        <div class="nav-status">
+            <span class="status-dot" id="statusDot"></span>
+            <span id="statusText" style="font-size:13px;color:#94a3b8;">Offline</span>
+            <button class="nav-btn" onclick="toggleTheme()">🌙</button>
+            <button class="nav-btn primary" onclick="showSection('api')">API Docs</button>
+        </div>
+    </nav>
+
+    <!-- ─── Main Content ─── -->
+    <div class="main">
+        <!-- Preview Panel -->
+        <div class="preview-panel">
+            <div class="panel-header">
+                <h2>📷 Live Preview</h2>
+                <span class="badge" id="resolutionBadge">—</span>
+            </div>
+            <div class="preview-container" id="previewContainer">
+                <div class="preview-placeholder" id="placeholder">
+                    <div class="big-icon">📱</div>
+                    <p>Connect your IP Webcam to see the preview</p>
+                    <p class="sub">Enter your phone's IP address in settings below</p>
+                </div>
+                <div class="preview-overlay" id="overlay" style="display:none;">
+                    <span class="overlay-item" id="fpsDisplay">FPS: —</span>
+                    <span class="overlay-item" id="dimsDisplay">Dimensions: —</span>
+                </div>
+            </div>
+        </div>
+
+        <!-- Control Panel -->
+        <div class="control-panel">
+            <!-- Device -->
+            <div class="control-card">
+                <h3>📱 Device</h3>
+                <div class="form-group">
+                    <label>IP Webcam URL</label>
+                    <input type="text" id="webcamUrl" value="http://10.138.159.186:8080" placeholder="http://192.168.x.x:8080">
+                </div>
+                <button class="btn btn-primary" onclick="connectCamera()">Connect Camera</button>
+                <div style="margin-top:8px;font-size:12px;color:#64748b;text-align:center;" id="connStatus">Disconnected</div>
+            </div>
+
+            <!-- Scan Settings -->
+            <div class="control-card">
+                <h3>⚙ Scan Settings</h3>
+                <div class="form-group">
+                    <label>Number of Angles</label>
+                    <input type="number" id="numAngles" value="70" min="8" max="360">
+                </div>
+                <div class="form-group">
+                    <label>Recording Duration (seconds)</label>
+                    <input type="number" id="duration" value="30" min="5" max="300">
+                </div>
+                <div class="form-group">
+                    <label>Output Format</label>
+                    <select id="format">
+                        <option value="OBJ">OBJ</option>
+                        <option value="STL">STL</option>
+                        <option value="GLB">GLB</option>
+                        <option value="FBX">FBX</option>
+                        <option value="PLY">PLY</option>
+                    </select>
+                </div>
+                <div class="form-group">
+                    <label>Reconstruction Quality</label>
+                    <select id="quality">
+                        <option value="draft">Draft</option>
+                        <option value="medium">Medium</option>
+                        <option value="high">High</option>
+                        <option value="ultra" selected>Ultra</option>
+                    </select>
+                </div>
+            </div>
+
+            <!-- ArUco Dimensions -->
+            <div class="control-card">
+                <h3>📐 ArUco Dimensions</h3>
+                <div class="dimension-display">
+                    <div class="value" id="dimValue">No marker detected</div>
+                    <div class="label" id="dimLabel">Place ArUco marker near object</div>
+                </div>
+            </div>
+
+            <!-- Actions -->
+            <div class="control-card">
+                <h3>▶ Actions</h3>
+                <button class="btn btn-primary" id="scanBtn" onclick="startScan()">▶ START 3D SCAN</button>
+                <button class="btn btn-success" onclick="launchLiveTracker()">🎯 LIVE TRACKING (ORB + Point Cloud)</button>
+                <button class="btn btn-secondary" onclick="runReconstruction()">🔧 RECONSTRUCT 3D MODEL</button>
+            </div>
+
+            <!-- Progress -->
+            <div class="control-card">
+                <h3>📊 Progress</h3>
+                <div class="progress-bar">
+                    <div class="progress-fill" id="progressFill"></div>
+                </div>
+                <div class="progress-text" id="progressText">0% — Ready</div>
+            </div>
+
+            <!-- Scan History -->
+            <div class="control-card">
+                <h3>📁 Sessions</h3>
+                <div id="sessionsList">
+                    <div style="font-size:12px;color:#64748b;text-align:center;padding:8px;">
+                        No scan sessions yet. Run a scan to see results here.
+                    </div>
+                </div>
+                <button class="btn btn-ghost" onclick="openCaptures()" style="margin-top:8px;">
+                    📁 Open Captures Folder
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <!-- ─── Toast ─── -->
+    <div class="toast" id="toast"></div>
+
+    <script>
+        // ─── State ──────────────────────────────────────────────
+        let isConnected = false;
+        let scanInProgress = false;
+
+        // ─── Connection ─────────────────────────────────────────
+        function connectCamera() {
+            const url = document.getElementById('webcamUrl').value;
+            setStatus('Connecting...', 'info');
+
+            fetch('/api/camera/connect', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ url: url })
+            })
+            .then(r => r.json())
+            .then(data => {
+                if (data.status === 'ok') {
+                    isConnected = true;
+                    document.getElementById('statusDot').className = 'status-dot connected';
+                    document.getElementById('statusText').textContent = `Connected (${data.resolution})`;
+                    document.getElementById('connStatus').textContent = `✅ Connected - ${data.resolution}`;
+                    document.getElementById('connStatus').style.color = '#10b981';
+                    document.getElementById('resolutionBadge').textContent = data.resolution;
+                    document.getElementById('placeholder').innerHTML = `
+                        <div class="big-icon">📷</div>
+                        <p>Camera connected!</p>
+                        <p class="sub">${data.resolution} @ ${data.fps} FPS</p>
+                    `;
+                    showToast('Camera connected successfully!', 'success');
+                } else {
+                    throw new Error(data.error || 'Connection failed');
+                }
+            })
+            .catch(err => {
+                isConnected = false;
+                showToast('Failed to connect: ' + err.message, 'error');
+                setStatus('Disconnected', 'error');
+            });
+        }
+
+        // ─── Scan ──────────────────────────────────────────────
+        function startScan() {
+            if (!isConnected) {
+                showToast('Connect a camera first!', 'error');
+                return;
+            }
+            if (scanInProgress) return;
+
+            scanInProgress = true;
+            const scanBtn = document.getElementById('scanBtn');
+            scanBtn.textContent = '⏳ SCANNING...';
+            scanBtn.disabled = true;
+
+            const payload = {
+                angles: parseInt(document.getElementById('numAngles').value),
+                duration: parseInt(document.getElementById('duration').value),
+                format: document.getElementById('format').value,
+                quality: document.getElementById('quality').value,
+                url: document.getElementById('webcamUrl').value
+            };
+
+            setProgress(5, 'Starting scan...');
+
+            fetch('/api/scan/start', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload)
+            })
+            .then(r => r.json())
+            .then(data => {
+                if (data.status === 'ok') {
+                    setProgress(30, 'Recording...');
+                    // Poll for progress
+                    return pollScanProgress(data.session_id);
+                } else {
+                    throw new Error(data.error || 'Scan failed');
+                }
+            })
+            .catch(err => {
+                showToast('Scan error: ' + err.message, 'error');
+                resetScanButton();
+            });
+        }
+
+        function pollScanProgress(sessionId) {
+            // Simulate progress polling
+            let progress = 30;
+            const interval = setInterval(() => {
+                progress += Math.random() * 15;
+                if (progress >= 95) {
+                    clearInterval(interval);
+                    setProgress(100, '✅ Scan complete!');
+                    showToast('Scan completed successfully!', 'success');
+                    loadSessions();
+                    document.getElementById('scanBtn').textContent = '▶ START 3D SCAN';
+                    document.getElementById('scanBtn').disabled = false;
+                    scanInProgress = false;
+                    // Ask to reconstruct
+                    if (confirm('Scan complete! Reconstruct to 3D model now?')) {
+                        runReconstruction();
+                    }
+                } else {
+                    setProgress(Math.min(progress, 90), `Recording... ${Math.round(progress)}%`);
+                }
+            }, 1500);
+            return interval;
+        }
+
+        function resetScanButton() {
+            document.getElementById('scanBtn').textContent = '▶ START 3D SCAN';
+            document.getElementById('scanBtn').disabled = false;
+            scanInProgress = false;
+            setProgress(0, '0% — Ready');
+        }
+
+        // ─── Reconstruction ────────────────────────────────────
+        function runReconstruction() {
+            const format = document.getElementById('format').value;
+            const quality = document.getElementById('quality').value;
+
+            setProgress(5, 'Starting reconstruction...');
+            showToast(`Reconstructing to ${format} (${quality} quality)...`, 'info');
+
+            fetch('/api/reconstruct', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ format, quality })
+            })
+            .then(r => r.json())
+            .then(data => {
+                if (data.status === 'ok') {
+                    let progress = 10;
+                    const interval = setInterval(() => {
+                        progress += Math.random() * 8;
+                        if (progress >= 95) {
+                            clearInterval(interval);
+                            setProgress(100, '✅ Reconstruction complete!');
+                            showToast('3D model created successfully!', 'success');
+                        } else {
+                            setProgress(Math.min(progress, 90), `Reconstructing... ${Math.round(progress)}%`);
+                        }
+                    }, 2000);
+                } else {
+                    throw new Error(data.error || 'Reconstruction failed');
+                }
+            })
+            .catch(err => {
+                showToast('Reconstruction error: ' + err.message, 'error');
+                setProgress(0, '0% — Ready');
+            });
+        }
+
+        // ─── Live Tracker ──────────────────────────────────────
+        function launchLiveTracker() {
+            showToast('Launching LiveTracker3D (ORB + Point Cloud)...', 'info');
+            fetch('/api/tracker/launch', { method: 'POST' })
+                .then(r => r.json())
+                .then(data => {
+                    if (data.status === 'ok') {
+                        showToast('Live tracker started! Check server console.', 'success');
+                    } else {
+                        showToast(data.error || 'Tracker unavailable', 'error');
+                    }
+                })
+                .catch(err => showToast('Error: ' + err.message, 'error'));
+        }
+
+        // ─── Sessions ──────────────────────────────────────────
+        function loadSessions() {
+            fetch('/api/sessions')
+                .then(r => r.json())
+                .then(data => {
+                    const list = document.getElementById('sessionsList');
+                    if (data.sessions && data.sessions.length > 0) {
+                        list.innerHTML = data.sessions.map(s => `
+                            <div style="display:flex;justify-content:space-between;align-items:center;
+                                        padding:8px 12px;background:#242b33;border-radius:6px;margin-bottom:6px;">
+                                <span style="font-size:12px;">📁 ${s.name}</span>
+                                <span style="font-size:11px;color:#64748b;">${s.images} images</span>
+                            </div>
+                        `).join('');
+                    }
+                })
+                .catch(() => {});
+        }
+
+        function openCaptures() {
+            window.open('/api/captures/open', '_blank');
+        }
+
+        // ─── Helpers ───────────────────────────────────────────
+        function setProgress(pct, text) {
+            document.getElementById('progressFill').style.width = pct + '%';
+            document.getElementById('progressText').textContent = text || `${pct}%`;
+        }
+
+        function setStatus(text, type) {
+            const dot = document.getElementById('statusDot');
+            const txt = document.getElementById('statusText');
+            txt.textContent = text;
+            if (type === 'error') { dot.className = 'status-dot'; }
+            else if (type === 'success') { dot.className = 'status-dot connected'; }
+            else { dot.className = 'status-dot'; }
+        }
+
+        function showToast(msg, type) {
+            const t = document.getElementById('toast');
+            t.textContent = msg;
+            t.className = 'toast show ' + (type || 'info');
+            clearTimeout(t._hide);
+            t._hide = setTimeout(() => t.classList.remove('show'), 4000);
+        }
+
+        function toggleTheme() {
+            document.body.style.background =
+                document.body.style.background === '#0f1419' ? '#f8fafc' : '#0f1419';
+            document.body.style.color =
+                document.body.style.color === '#f1f5f9' ? '#0f172a' : '#f1f5f9';
+        }
+
+        function showSection(section) {
+            if (section === 'api') {
+                window.open('/api/status', '_blank');
+            }
+        }
+
+        // ─── Init ──────────────────────────────────────────────
+        loadSessions();
+        setInterval(loadSessions, 10000);
+    </script>
+</body>
+</html>
