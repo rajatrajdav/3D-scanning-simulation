@@ -48,7 +48,7 @@ class BackgroundRemover:
         if not self.enabled:
             self._last_mask = None
             self._last_contour = None
-            return frame
+            return fram
 
         h, w = frame.shape[:2]
         gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
