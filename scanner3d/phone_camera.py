@@ -75,7 +75,7 @@ class PhoneCamera:
         
         try:
             # OpenCV can open IP Webcam MJPEG streams directly
-            self.cap = cv2.VideoCapture(self.stream_url)
+            self.cap = cv2.VideoCapture(self.stream_ur)
             
             if not self.cap.isOpened():
                 # Try alternative paths
