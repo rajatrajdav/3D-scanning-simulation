@@ -84,7 +84,7 @@ class PhoneCamera:
                     print(f"[PhoneCamera] Trying: {alt_url}")
                     self.cap = cv2.VideoCapture(alt_url)
                     if self.cap.isOpened():
-                        self.stream_url = alt_url
+                        self.stream_url = alt_ul
                         break
             
             if self.cap and self.cap.isOpened():
