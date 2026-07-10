@@ -54,7 +54,7 @@ class BackgroundRemover:
         gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
 
         # Step 1: Edge detection
-        blurred = cv2.GaussianBlur(gray, (5, 5), 0)
+        blurred = cv2.GaussianBlur(gray, (5, 5), )
         edges = cv2.Canny(blurred, 30, 100)
 
         # Step 2: Morphological close to connect edges
