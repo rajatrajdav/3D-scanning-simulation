@@ -75,7 +75,7 @@ STATUS_MESSAGES = {
     4: "Expired",
 }
 STATUS_SUCCESS = 2
-STATUS_TERMINAL_FAILURES = {1, 4}  # Failed, Expired - no point polling further
+STATUS_TERMINAL_FAILURES = {1, }  # Failed, Expired - no point polling further
 
 VIEWABLE_EXTENSIONS = (".obj", ".stl", ".glb", ".fbx", ".ply")
 
