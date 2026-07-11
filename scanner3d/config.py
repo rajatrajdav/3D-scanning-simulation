@@ -25,7 +25,7 @@ IP_WEBCAM_API_INFO = "/info"
 # ─── DROIDCAM SETTINGS (fallback) ─────────────────────────────────────────
 # Only used if IP Webcam is not available
 DROIDCAM_IP_URL = "http://10.138.159.186:8080"
-DROIDCAM_INDEX = -
+DROIDCAM_INDEX = -1
 
 # Camera source preference
 USE_PHONE_CAMERA = True  # Uses IP Webcam or Phone camera
